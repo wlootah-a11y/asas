@@ -37,7 +37,7 @@ KIND_SLA_SWEEP = "tickets.sla_sweep"
 SLA_SWEEP_SECONDS = 300
 
 
-def _context_binder(org_id, **_kwargs) -> None:
+def _context_binder(session: Session, org_id: int, **_kwargs) -> None:
     """Bind the job's tenant context before its handler runs.
 
     The queue tables are tenancy-**global** — a job is claimed before any context
@@ -45,6 +45,12 @@ def _context_binder(org_id, **_kwargs) -> None:
     for each job from the row's own ``org_id``, and that is what this hook does.
     Single-tenant here, so there is nothing to bind and the body is empty; the
     hook is still installed, because the *shape* is the thing worth showing.
+
+    The runner calls ``fn(session, org_id)`` — and only for jobs that *carry*
+    an org, which is how a wrong signature here once survived the whole suite:
+    hand-enqueued test jobs are org-less and skip the binder, while every
+    schedule-spawned job carries its schedule's org and failed at bind time,
+    forever, with the handler never reached.
     """
     return None
 

@@ -85,6 +85,11 @@ the things most likely to cost you an afternoon.
 - **`notify(record=...)` is what runs the recipient filter.** Omit it and a
   classified record's title reaches an inbox with no error.
   (`app/wiring/notifications.py`)
+- **The notifications context resolver returns `(user_id, org_id)` — in that
+  order.** Reversed, nothing fails loudly: emits succeed, but every row is
+  stamped with the wrong org (so the org-scoped feed hides it) and
+  `/me/notifications` serves whichever agent's id equals the org's.
+  (`app/wiring/notifications.py`)
 - **`ensure_type(session, **kwargs)`** forwards straight to the model, so its
   accepted names are invisible in the signature. The identifier is `key`, not
   `code`. (`app/wiring/lookups.py`)

@@ -18,7 +18,7 @@ import asas_workflow
 import pytest
 from sqlmodel import Session, select
 
-from app.models import Ticket
+from app.models import DEFAULT_ORG_ID, Ticket
 
 
 def _ticket(session, **kwargs) -> Ticket:
@@ -277,6 +277,114 @@ def test_the_sweep_is_idempotent(app_module, agents):
             if "past its due date" in n.title
         ]
         assert len(breaches) == 1, f"the sweep produced {len(breaches)} rows, not 1"
+
+
+def test_sla_notification_rows_carry_the_hosts_org(app_module, agents):
+    """Rows stamped by the *resolver* carry the host's org, not a swapped one.
+
+    The regression this pins: the context resolver's contract is
+    ``(user_id, org_id)`` and an early version returned ``(org_id, actor)``.
+    Nothing failed loudly — the emit succeeded, the row was written — but it
+    carried org 0, and the org-scoped feed queries then filtered it out. The
+    sweep's emit passes no explicit ``org_id``, so it exercises exactly the
+    resolver path.
+    """
+    from app.wiring.jobs import KIND_SLA_SWEEP
+
+    with Session(app_module.engine) as session:
+        _ticket(
+            session,
+            assignee_id=agents["agent"].id,
+            due_on=date.today() - timedelta(days=1),
+        )
+        asas_jobs.enqueue(session, KIND_SLA_SWEEP)
+        session.commit()
+
+    asas_jobs.run_once()
+
+    with Session(app_module.engine) as session:
+        breaches = [
+            n
+            for n in _notifications_for(session, agents["agent"].id)
+            if "past its due date" in n.title
+        ]
+        assert breaches, "the sweep emitted nothing"
+        assert all(n.org_id == DEFAULT_ORG_ID for n in breaches), (
+            f"resolver-stamped rows carry org {[n.org_id for n in breaches]}, "
+            f"not the host's org {DEFAULT_ORG_ID} — the resolver tuple is "
+            f"probably reversed"
+        )
+
+
+def test_the_schedule_spawned_sweep_binds_its_context(client, app_module):
+    """An org-carrying job must survive the context binder.
+
+    The runner calls the binder ``fn(session, org_id)`` — and only for jobs
+    that *carry* an org. The host's binder had signature ``(org_id, **kwargs)``,
+    so every schedule-spawned sweep (stamped with its schedule's org) died at
+    bind time with a TypeError before its handler ran, forever — while the
+    suite's hand-enqueued, org-less jobs skipped the binder and passed.
+    """
+    from asas_jobs.models import BackgroundJob
+
+    asas_jobs.run_once()  # ticks the seeded schedule, spawning an org-carrying job
+
+    with Session(app_module.engine) as session:
+        spawned = session.exec(
+            select(BackgroundJob).where(BackgroundJob.org_id.is_not(None))
+        ).all()
+        assert spawned, "the seeded schedule spawned no org-carrying job"
+        failed = [j for j in spawned if j.last_error]
+        assert not failed, (
+            f"org-carrying jobs failed at the binder: "
+            f"{[j.last_error for j in failed]}"
+        )
+
+
+def test_sla_breach_is_visible_in_the_assignees_own_feed(fake_auth_app):
+    """The whole read path: resolver identity -> org scope -> the feed router.
+
+    The direct-query tests above cannot catch a resolver that misidentifies
+    the caller — ``/me/notifications`` derives "me" from the context resolver,
+    so a resolver reporting a constant serves everybody the same inbox (the
+    reversed tuple served whichever agent's id equalled the org's). Driven
+    through HTTP with two different tokens: the assignee sees the breach, a
+    bystander does not.
+    """
+    from fastapi.testclient import TestClient
+    from app.models import Agent
+    from app.wiring.jobs import KIND_SLA_SWEEP
+
+    with TestClient(fake_auth_app.app) as http:  # lifespan seeds the demo agents
+        with Session(fake_auth_app.engine) as session:
+            sam = session.exec(
+                select(Agent).where(Agent.email == "agent@example.invalid")
+            ).one()
+            _ticket(
+                session,
+                assignee_id=sam.id,
+                due_on=date.today() - timedelta(days=1),
+            )
+            asas_jobs.enqueue(session, KIND_SLA_SWEEP)
+            session.commit()
+
+        asas_jobs.run_once()
+
+        feed = http.get(
+            "/me/notifications", headers={"Authorization": "Bearer token-agent"}
+        )
+        assert feed.status_code == 200
+        assert any(
+            "past its due date" in item["title"] for item in feed.json()["items"]
+        ), "the assignee's own feed does not show the breach"
+
+        bystander = http.get(
+            "/me/notifications", headers={"Authorization": "Bearer token-viewer"}
+        )
+        assert bystander.status_code == 200
+        assert not any(
+            "past its due date" in item["title"] for item in bystander.json()["items"]
+        ), "another user's feed shows the assignee's breach"
 
 
 # --------------------------------------------------------------------------

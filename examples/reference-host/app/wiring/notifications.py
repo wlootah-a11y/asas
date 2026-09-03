@@ -33,13 +33,20 @@ KIND_SLA_BREACHED = "ticket.sla_breached"
 
 
 def _context_resolver(session: Session) -> Optional[tuple[int, int]]:
-    """(org_id, actor_user_id) for the row being written.
+    """``(user_id, org_id)`` — the package's order, and the order matters.
 
-    Single-tenant, and this host has no request-scoped actor, so the actor is
-    reported as 0 — "the system". A real host would read both off its request
-    context. Returning ``None`` is also valid and means "do not stamp".
+    An early version returned ``(org_id, actor)``, and nothing failed loudly:
+    every feed served whichever agent's id equalled the org's, and every
+    resolver-stamped row carried org 0 — which the org-scoped read paths then
+    filtered out. A swapped tuple here is invisible until someone opens a feed.
+
+    The actor is whoever ``fake_auth.get_current_user`` stashed on
+    ``session.info`` for this request; outside a request (a job sweep, the
+    boot) there is nobody, and 0 — "the system" — is reported. Single-tenant,
+    so the org is the constant. Returning ``None`` is also valid and means
+    "do not stamp".
     """
-    return (DEFAULT_ORG_ID, 0)
+    return (session.info.get("actor_user_id", 0), DEFAULT_ORG_ID)
 
 
 def _recipient_filter(

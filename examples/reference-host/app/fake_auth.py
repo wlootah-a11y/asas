@@ -16,7 +16,7 @@ that returns your user object, wired in the three places marked below.
 =============================================================================
 
 Demonstrates: the **auth composition seam**, which has no worked example
-anywhere else. Three things a host must supply, and where they land:
+anywhere else. Four things a host must supply, and where they land:
 
 1. ``get_current_user`` — your dependency. Asas packages never learn how it
    works; they receive the resolved object and ask the access package about it.
@@ -25,6 +25,10 @@ anywhere else. Three things a host must supply, and where they land:
    including them. See ``main.py``.
 3. ``configure_org_resolver`` — tenancy is a host concept. See
    ``wiring/lookups.py``.
+4. **The request actor, reachable from a session** — hooks like notifications'
+   context resolver are handed only the session, so ``get_current_user``
+   stashes the resolved actor on ``session.info`` (see below, and
+   ``wiring/notifications.py``).
 
 The module refuses to arm without ``ENABLE_FAKE_AUTH=1`` so that a host which
 copied it by accident fails closed on its first request rather than shipping
@@ -111,7 +115,15 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="unknown token"
         )
-    return session.exec(select(Agent).where(Agent.email == email)).first()
+    agent = session.exec(select(Agent).where(Agent.email == email)).first()
+    if agent is not None:
+        # The fourth wiring point of the seam: packages that need "who is
+        # acting" mid-request (notifications' context resolver) receive only
+        # the session, so the resolved actor rides on `session.info` — FastAPI
+        # caches the session dependency per request, making it request-scoped
+        # storage every downstream callable already holds.
+        session.info["actor_user_id"] = agent.id
+    return agent
 
 
 def require_user(user: Optional[Agent] = Depends(get_current_user)) -> Agent:
