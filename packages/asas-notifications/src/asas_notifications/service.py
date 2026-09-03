@@ -1,10 +1,17 @@
-"""Emitter seam + routing policy + dispatcher (WXL-222).
+"""Emitter seam + routing policy + dispatcher (WXL-222; DR 0003).
 
-- Producers ``register_kind`` at wiring time (defaults: category/urgency/reason) and
-  call ``notify`` inside their own transaction — the insert IS the enqueue.
-- The routing policy maps urgency to external channels: ``low`` is in-app only
-  (ambient activity never emails you — the epic's KPI), ``normal``/``high`` get an
-  email delivery row. ``in_app`` is intrinsic: the notification row itself.
+- Producers call ``notify`` inside their own transaction — the insert IS the
+  enqueue — passing the **application action** that caused the emit and the
+  three axes (topic/nature/urgency). No registration: the action is a
+  reference, not a declaration; ``register_kind`` survives one release as a
+  deprecating shim (DR 0003 I-3).
+- Routing resolves per channel, most specific wins: topic policy row → axis
+  policy row → the built-in fallback, which is exactly the pre-0.16 rule —
+  ``low`` is in-app only (ambient activity never emails you — the epic's KPI),
+  ``normal``/``high`` add an email delivery row. Empty policy tables therefore
+  reproduce 0.15 behavior bit-for-bit (the DR's equivalence guarantee).
+  ``in_app`` is the notification row itself; a policy that disables it for an
+  emit suppresses the whole insert (no row, no anchor for deliveries).
 - The dispatcher is queue-shaped but v1-simple: an after-commit hook plus a
   startup/periodic sweep (same self-heal pattern as ``search/semantic.py``), core
   SQL only (an ORM session inside ``after_commit`` would re-fire the hook). Send
@@ -13,6 +20,7 @@
 """
 
 import logging
+import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -30,9 +38,11 @@ from .channels import DeliveryPayload, SkipDelivery, adapter_for
 from .models import (
     Category,
     DeliveryStatus,
+    Nature,
     Notification,
+    NotificationChannelPolicy,
     NotificationDelivery,
-    Reason,
+    NotificationTopic,
     Urgency,
 )
 
@@ -44,25 +54,46 @@ MAX_ATTEMPTS = 5
 # (SMTP timeout is 30s), so five minutes is comfortably past any live send.
 STALE_CLAIM_SECONDS = 300
 
-# ── kind registry ─────────────────────────────────────────────────────────────
+# ── legacy kind shim (DR 0003 I-3 — one release, then removed) ───────────────
+
+IN_APP = "in_app"
+#: The seeded platform topic: the designated home for ad hoc emits and for
+#: legacy ``register_kind`` specs that predate the topic axis.
+DEFAULT_TOPIC = "general"
 
 
 @dataclass(frozen=True)
 class KindSpec:
-    category: Category
+    category: Nature  # field name kept for one release — hosts introspect it
     urgency: Urgency
-    reason: Reason
+    topic: str = DEFAULT_TOPIC
 
 
 _KINDS: dict[str, KindSpec] = {}
 
 
 def register_kind(
-    kind: str, *, category: Category, urgency: Urgency, reason: Reason
+    kind: str,
+    *,
+    category: Nature,
+    urgency: Urgency,
+    # Accepted and ignored: ``reason`` is no longer stored, and a 0.15 wiring
+    # that still passes it must keep working for this shim's last release.
+    reason: Any = None,
+    topic: str = DEFAULT_TOPIC,
 ) -> None:
-    """Producers declare a kind's defaults at wiring time. Emitting an unregistered
-    kind fails loud — the catalog in the epic is the source of truth."""
-    _KINDS[kind] = KindSpec(Category(category), Urgency(urgency), Reason(reason))
+    """DEPRECATED (DR 0003): the kind catalog is gone — pass the action and the
+    four axes on :func:`notify` instead. This shim keeps a 0.15 wiring working
+    for one release: a registered kind supplies axis defaults when ``notify``
+    is called with its name and no axes; ``topic`` defaults to the seeded
+    ``general`` topic so a legacy emit always passes topic validation."""
+    warnings.warn(
+        "register_kind() is deprecated: pass action= and the four axes "
+        "(topic/nature/urgency) on notify() instead (DR 0003)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    _KINDS[kind] = KindSpec(Nature(category), Urgency(urgency), topic)
 
 
 def registered_kinds() -> dict[str, KindSpec]:
@@ -72,10 +103,14 @@ def registered_kinds() -> dict[str, KindSpec]:
 # ── app seams (wired in notifications_wiring.py) ─────────────────────────────
 
 # (session) -> (user_id, org_id) of the current request, or None outside one.
-_context_resolver: Optional[Callable[[Session], Optional[tuple[int, int]]]] = None
+_context_resolver: Optional[Callable[[Session], Optional[tuple[Any, Any]]]] = None
 # (session, user_ids, entity_type, entity_id, record) -> user_ids allowed to
 # know the subject exists. `record` is None when the producer did not have the
 # row; the id is always passed so the filter can resolve it itself.
+#: (session, user_id) -> BCP-47 tag, or None. Consulted once per recipient at
+#: emit; see configure_locale_resolver.
+_locale_resolver: Optional[Callable[[Session, Any], Optional[str]]] = None
+
 _recipient_filter: Optional[
     Callable[[Session, Sequence[int], str, Optional[int], Any], Sequence[int]]
 ] = None
@@ -90,6 +125,35 @@ def configure_context_resolver(
     or None``."""
     global _context_resolver
     _context_resolver = fn
+
+
+def configure_locale_resolver(
+    fn: Optional[Callable[[Session, Any], Optional[str]]]
+) -> None:
+    """``(session, user_id) -> language tag``, called per recipient at emit.
+
+    **Why at emit and not at dispatch.** The dispatcher runs on raw connections
+    outside any request: ``current_user_id`` and ``current_org_id`` return
+    ``None`` there by contract, so a renderer between the outbox and an adapter
+    has nobody to ask what language a recipient reads. A notification emitted
+    today and mailed by tomorrow's sweep would render in the deployment default,
+    which for a reader of the other language is simply the wrong email. So the
+    answer is recorded when the fact happens.
+
+    Optional, and a no-op when unconfigured: ``locale`` stays ``NULL`` and an
+    adapter reads that as "deployment default", which is what every host does
+    today. Nothing changes for a single-language deployment.
+
+    **Returning ``None`` for a recipient is fine** and means the same thing. A
+    subject with no account row, or one that has expressed no preference, is not
+    an error; it is a recipient the host has nothing to say about.
+
+    The host is handed its own ``user_id`` value, not the stored form, for the
+    same reason the recipient filter is: this seam is the host's own lookup, and
+    it should not have to know how the package stores an id.
+    """
+    global _locale_resolver
+    _locale_resolver = fn
 
 
 def configure_recipient_filter(
@@ -114,12 +178,12 @@ def configure_recipient_filter(
     _recipient_filter = fn
 
 
-def current_user_id(session: Session) -> Optional[int]:
+def current_user_id(session: Session) -> Optional[Any]:
     ctx = _context_resolver(session) if _context_resolver else None
     return ctx[0] if ctx else None
 
 
-def current_org_id(session: Session) -> Optional[int]:
+def current_org_id(session: Session) -> Optional[Any]:
     """The request's org, when a context resolver is configured and inside a
     request. Feed/read/archive queries constrain on it *in addition to*
     ``user_id`` — defense in depth for multi-tenant hosts: host-level tenancy
@@ -130,26 +194,202 @@ def current_org_id(session: Session) -> Optional[int]:
     return ctx[1] if ctx else None
 
 
-def _recipient_conditions(session: Session, user_id: int) -> list:
+def normalize_id(value: Any) -> Optional[str]:
+    """A host identity value as the package stores it, or ``None``.
+
+    The one place a host's id becomes the package's storage form. Nothing here
+    parses these values: they are grouped, filtered and compared, all of which
+    text does, so the columns are VARCHAR and this is the only coercion.
+
+    An int host passes ints and reads back their decimal string; a UUID host
+    passes its own keys and reads them back unchanged. ``None`` stays ``None``,
+    because an absent entity id is absent rather than the string "None".
+
+    Applied at the STORAGE boundary and deliberately nowhere else. The
+    visibility filter and the context resolver are handed the host's own values,
+    not these: a filter written against ints that silently stops dropping
+    anyone is a leak, and that is the one failure the seam exists to prevent.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
+def _recipient_conditions(session: Session, user_id: Any) -> list:
     """THE tenancy chokepoint: every recipient-facing query builds its WHERE
     from this list, so the org guard cannot be forgotten at one site. Keep new
     feed/count/bulk queries on it."""
-    conditions = [Notification.user_id == user_id]
+    conditions = [Notification.user_id == normalize_id(user_id)]
     org_id = current_org_id(session)
     if org_id is not None:
-        conditions.append(Notification.org_id == org_id)
+        conditions.append(Notification.org_id == normalize_id(org_id))
     return conditions
 
 
-# ── routing policy ────────────────────────────────────────────────────────────
+# ── routing policy (DR 0003 S-5) ─────────────────────────────────────────────
+
+# Config reads ride the hot emit path, so topic keys and policy rows are cached
+# in-process for a short TTL — admin changes propagate within a minute across
+# replicas, with no invalidation bus (deliberate; DR 0003).
+CONFIG_TTL_SECONDS = 60
+_topic_cache: dict[str, tuple[datetime, frozenset]] = {}
+_policy_cache: dict[Optional[int], tuple[datetime, tuple]] = {}
 
 
-def _channels_for(category: Category, urgency: Urgency, reason: Reason) -> list[str]:
-    """urgency low → in-app only; normal/high → email. Later: filtered by per-user
-    (reason × category) → channel preferences — the schema already carries all keys."""
-    if urgency is Urgency.low:
-        return []
-    return ["email"]
+def config_cache_clear() -> None:
+    """Drop the cached topic/policy config (tests; admin APIs after a write)."""
+    _topic_cache.clear()
+    _policy_cache.clear()
+
+
+def _fresh(entry) -> bool:
+    return entry is not None and (
+        (datetime.utcnow() - entry[0]).total_seconds() < CONFIG_TTL_SECONDS
+    )
+
+
+def _all_topic_keys(session: Session, *, refresh: bool = False) -> frozenset:
+    """Every topic key in the table (any org). Validation is org-agnostic —
+    its job is catching typos and unseeded topics, and a key seeded for any
+    org is not a typo; org scoping happens in policy resolution, which just
+    falls back for a topic with no rows for this org."""
+    entry = None if refresh else _topic_cache.get("all")
+    if not _fresh(entry):
+        rows = session.exec(select(NotificationTopic.key)).all()
+        entry = (datetime.utcnow(), frozenset(rows))
+        _topic_cache["all"] = entry
+    return entry[1]
+
+
+def _topic_known(session: Session, topic: str) -> bool:
+    """Membership with a fresh re-query on miss: a topic seeded on another
+    replica inside the TTL window must degrade to one extra SELECT, never to a
+    transaction-aborting false LookupError. (The inverse staleness — a key
+    cached from a transaction that later rolled back — expires with the TTL;
+    the emit it would wrongly admit routes to fallback policy and is
+    harmless.)"""
+    if topic in _all_topic_keys(session):
+        return True
+    return topic in _all_topic_keys(session, refresh=True)
+
+
+@dataclass(frozen=True)
+class _PolicyRow:  # a detached, cache-safe copy of NotificationChannelPolicy
+    id: int
+    #: The host's own org id in storage form, not an int: this is a copy of a
+    #: column that is VARCHAR now. Annotating it ``int`` described a shape this
+    #: has not held since identity became opaque.
+    org_id: Optional[str]
+    topic: Optional[str]
+    urgency: Optional[str]
+    channel: str
+    enabled: bool
+    mandatory: bool
+
+
+def _policy_rows(session: Session, org: Optional[Any]) -> tuple:
+    entry = _policy_cache.get(org)
+    if not _fresh(entry):
+        rows = session.exec(
+            select(NotificationChannelPolicy).where(
+                sa_or(
+                    NotificationChannelPolicy.org_id.is_(None),
+                    NotificationChannelPolicy.org_id == normalize_id(org),
+                )
+            )
+        ).all()
+        entry = (
+            datetime.utcnow(),
+            tuple(
+                _PolicyRow(
+                    id=r.id,
+                    org_id=r.org_id,
+                    topic=r.topic,
+                    urgency=r.urgency.value if r.urgency else None,
+                    channel=r.channel,
+                    enabled=r.enabled,
+                    mandatory=r.mandatory,
+                )
+                for r in rows
+            ),
+        )
+        _policy_cache[org] = entry
+    return entry[1]
+
+
+def resolve_channels(
+    session: Session,
+    # The host's own org id, in whatever shape the host's keys take; normalised
+    # on the way into the policy lookup like every other identity argument.
+    org: Optional[Any],
+    *,
+    topic: str,
+    urgency: Urgency,
+) -> dict[str, bool]:
+    """The effective channel set for one emit: ``{channel: mandatory}`` for
+    every **enabled** channel.
+
+    The policy table is a **(topic × urgency) matrix** with either coordinate
+    optional, and per channel the most specific matching cell wins:
+
+    1. both coordinates match — this topic at this urgency
+    2. topic matches, urgency is NULL — this topic, any urgency
+    3. urgency matches, topic is NULL — any topic at this urgency
+    4. both NULL — the org-wide default row
+    5. no row — the built-in fallback: ``low`` → in-app only, else in-app +
+       email, so empty policy tables reproduce 0.15 routing exactly
+
+    Within a tier an org override row beats a platform row, and a tie between
+    equally specific rows resolves to the NEWEST, so an administrator's latest
+    change takes effect rather than being shadowed by a stale predecessor.
+
+    Tier 1 is new in this release. Until now a CHECK constraint forbade a row
+    from carrying both coordinates, so the matrix was really two independent
+    lists and "this topic, but only when urgent" was unstorable. A topic rule
+    also silently ignored urgency, which meant the closest thing an
+    administrator could write applied far more widely than they intended.
+
+    ``nature`` is not a condition here. It describes what the notification asks
+    of the recipient, which is a different question from how loudly to deliver
+    it, and urgency already answers that one."""
+    rows = _policy_rows(session, org)
+    channels = {IN_APP, "email"} | {r.channel for r in rows}
+    urgency_value = urgency.value if isinstance(urgency, Urgency) else str(urgency)
+    resolved: dict[str, bool] = {}
+    for channel in channels:
+        # Every cell whose set coordinates match this emit. A NULL coordinate is
+        # a wildcard, so a row is a candidate unless one of its stated
+        # coordinates disagrees.
+        candidates = [
+            r
+            for r in rows
+            if r.channel == channel
+            and (r.topic is None or r.topic == topic)
+            and (r.urgency is None or r.urgency == urgency_value)
+        ]
+        pick = None
+        if candidates:
+            # Specificity first (a two-coordinate cell outranks either
+            # one-coordinate rule, which outranks the all-NULL default), then an
+            # org row over a platform row, then the newest id to break a tie
+            # between equally specific rows — the table has no uniqueness
+            # constraint, and an admin's latest change must win.
+            pick = max(
+                candidates,
+                key=lambda r: (
+                    (r.topic is not None) + (r.urgency is not None),
+                    r.org_id is not None,
+                    r.id,
+                ),
+            )
+        if pick is not None:
+            if pick.enabled:
+                resolved[channel] = pick.mandatory
+        elif channel == IN_APP:
+            resolved[channel] = False
+        elif channel == "email" and urgency is not Urgency.low:
+            resolved[channel] = False
+    return resolved
 
 
 # ── emit ──────────────────────────────────────────────────────────────────────
@@ -175,24 +415,46 @@ def suppressed():
 
 def notify(
     session: Session,
-    recipients: Iterable[int],
-    kind: str,
+    recipients: Iterable[Any],
+    action: Optional[str] = None,
     *,
-    title: str,
-    actor_user_id: Optional[int] = None,
+    topic: Optional[str] = None,
+    nature: Optional[Nature] = None,
+    urgency: Optional[Urgency] = None,
+    title: Optional[str] = None,
     body: Optional[str] = None,
     link: Optional[str] = None,
+    template: Optional[str] = None,
+    data: Optional[dict] = None,
+    # Any host id, like every other identity argument: this is compared
+    # against the recipient list through ``normalize_id`` and never stored, so a
+    # UUID host excludes its own actor exactly as an int host does.
+    actor_user_id: Optional[Any] = None,
     entity_type: Optional[str] = None,
-    entity_id: Optional[int] = None,
-    org_id: Optional[int] = None,
+    entity_id: Optional[Any] = None,
+    org_id: Optional[Any] = None,
     record: Any = None,
-    category: Optional[Category] = None,
-    urgency: Optional[Urgency] = None,
-    reason: Optional[Reason] = None,
+    locale: Optional[str] = None,
     coalesce_unread: bool = False,
     merge_body: Optional[Callable[[Optional[str], Optional[str]], Optional[str]]] = None,
+    category: Optional[Nature] = None,  # deprecated alias for nature (0.15 name)
+    kind: Optional[str] = None,  # deprecated alias for action (0.15 name)
 ) -> list[Notification]:
     """Insert notification (+ delivery) rows in the caller's transaction.
+
+    DR 0003: ``action`` is the application action that caused this emit
+    (``"job.publish"`` — imperative, the app's own vocabulary), a *reference
+    without declaration*: provenance, the coalescing identity, and nothing
+    else. ``None`` marks an ad hoc one-off, which never coalesces. The four
+    axes travel on the call; ``topic`` is required with an action (ad hoc
+    emits land in the seeded ``general`` topic) and must exist in
+    ``notification_topic`` — the one fail-loud reference, because policy and
+    preferences key on it. Channels come from :func:`resolve_channels`; when
+    policy disables ``in_app`` for this emit nothing is inserted at all (the
+    row is both the feed entry and the anchor for delivery rows).
+
+    ``template=`` and ``data=`` are stored for U-4's renderer (and a possible
+    read-time feed renderer later); ``title`` remains required until then.
 
     - Actor exclusion is built in: ``actor_user_id`` never notifies itself.
     - Notifications are tenant-owned: ``org_id`` is stamped from the explicit
@@ -203,26 +465,85 @@ def notify(
       visibility filter — a notification must never leak a private record (the
       search-index rule). ``record`` is passed to the filter when the producer
       has it and is ``None`` otherwise; the filter always receives ``entity_id``
-      and decides. Filtering only on ``record is not None`` used to let a
-      producer skip it silently just by not having the row to hand.
-    - category/urgency/reason default from the registered kind; producers override
-      per-emit only when the event is genuinely ambiguous (e.g. an @mention that
-      carries an explicit ask). Never inferred from message text.
-    - ``coalesce_unread`` (TEAMY-298): an UNREAD row for the same (recipient,
-      kind, entity) is updated in place — title/body replaced (``merge_body(old,
-      new)`` when given), ``created_at`` refreshed — instead of inserting, so an
-      edit burst stays one live bell entry. Only ambient emits coalesce: it
-      requires an entity key and is ignored whenever the emit routes to external
-      channels (each email-worthy event stays a discrete row), and read **or
-      archived** rows are never rewritten — merging into a row the recipient can
-      no longer see would drop the event.
+      and decides.
+    - ``coalesce_unread`` (TEAMY-298): an UNREAD row for the same (org,
+      recipient, action, entity) is updated in place — title/body replaced
+      (``merge_body(old, new)`` when given), latest ``data`` wins, ``created_at``
+      refreshed — instead of inserting, so an edit burst stays one live bell
+      entry. Only ambient emits coalesce: it requires an action and an entity
+      key and is ignored whenever the emit routes to external channels, and
+      read **or archived** rows are never rewritten.
 
     The caller owns the commit — the insert rides the producing transaction, so a
     notification exists iff the domain change committed.
     """
-    spec = _KINDS.get(kind)
-    if spec is None:
-        raise LookupError(f"unregistered notification kind: {kind}")
+    # ── legacy shims (one release — DR 0003 I-2/I-3) ──
+    if kind is not None:
+        warnings.warn(
+            "notify(kind=...) is deprecated: the parameter is action= now",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        action = action if action is not None else kind
+    if category is not None:
+        warnings.warn(
+            "notify(category=...) is deprecated: the axis is nature= now",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        nature = nature if nature is not None else category
+    # The shim applies ONLY to fully-legacy calls (no axis passed at all): a
+    # call site that states even one axis has been converted and must get the
+    # new fail-loud contract, not silent backfill from a spec that will be
+    # deleted next release.
+    if (
+        action is not None
+        and nature is None
+        and urgency is None
+        and topic is None
+        and (spec := _KINDS.get(action)) is not None
+    ):
+        warnings.warn(
+            f"notify({action!r}) is using register_kind() defaults — pass the "
+            "axes explicitly; the kind shim goes away next release (DR 0003)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        nature, urgency, topic = spec.category, spec.urgency, spec.topic
+
+    missing = [
+        name
+        for name, value in (("nature", nature), ("urgency", urgency))
+        if value is None
+    ]
+    if missing:
+        raise TypeError(
+            f"notify() is missing the {', '.join(missing)} axis/axes: pass them "
+            "explicitly — there is no kind catalog to default from (DR 0003)"
+        )
+    if action is not None and topic is None:
+        raise TypeError(
+            "notify(action=...) requires topic= — the management/preference "
+            "axis every emit must carry (DR 0003)"
+        )
+    if topic is None:
+        topic = DEFAULT_TOPIC  # ad hoc emits land in the seeded general topic
+    if title is None:
+        raise TypeError("notify() requires title= (template rendering lands with U-4)")
+    nat = Nature(nature)
+    urg = Urgency(urgency)
+
+    # The one reference an emit can get wrong that management depends on:
+    # policy rows and (U-3) preferences key on topic, so an unknown topic is a
+    # catalog mistake and fails loud — INSIDE suppressed() too, exactly like
+    # 0.15's unregistered-kind error: suppression silences delivery, never
+    # call-site mistakes.
+    if not _topic_known(session, topic):
+        raise LookupError(
+            f"unknown notification topic {topic!r}: seed it in "
+            "notification_topic (platform row) before emitting into it"
+        )
+
     if _suppress_notify.get():
         return []
     # Notifications are tenant-owned and ``Notification.org_id`` is NOT NULL.
@@ -240,13 +561,14 @@ def notify(
             "(background jobs, CLI, boot sweeps) or configure the context "
             "resolver — Notification.org_id is NOT NULL"
         )
-    cat = Category(category) if category else spec.category
-    urg = Urgency(urgency) if urgency else spec.urgency
-    rsn = Reason(reason) if reason else spec.reason
-
     ids = list(dict.fromkeys(u for u in recipients if u is not None))
     if actor_user_id is not None:
-        ids = [u for u in ids if u != actor_user_id]
+        # Compared through the storage form, so a host that hands the actor over
+        # in one shape and the recipients in another (a UUID object against its
+        # string, say) still excludes them. Comparing raw would silently notify
+        # somebody of their own action, which is the invariant this line IS.
+        actor = normalize_id(actor_user_id)
+        ids = [u for u in ids if normalize_id(u) != actor]
     if record is not None and not entity_type and _recipient_filter is not None:
         # "must never leak a private record" is only enforceable when the
         # filter can actually run. A record without its entity_type used to
@@ -261,28 +583,29 @@ def notify(
         )
     if entity_type and _recipient_filter is not None:
         # **The filter runs whenever there is a subject**, not only when the
-        # caller happened to pass the row.
-        #
-        # It used to run only on `record is not None`, so naming an entity_type
-        # without its row skipped filtering entirely and silently — every named
-        # recipient was notified, including for a restricted subject, and by
-        # then the title and body are already written.
-        #
-        # Requiring `record` at every call site was the obvious fix and is the
-        # wrong one: a *generic* producer (a workflow-event bridge, say) legitimately
-        # holds only `(entity_type, entity_id)` and cannot load an arbitrary
-        # subject. So the filter receives the id as well and decides for itself —
-        # use `record` when given, load it when not, or ignore both for an
-        # entity type that needs no filtering. Only the host knows which.
-        #
-        # A notification with no subject at all (a system announcement) has
-        # nothing to filter on and is left alone.
+        # caller happened to pass the row — see configure_recipient_filter.
         ids = list(_recipient_filter(session, ids, entity_type, entity_id, record))
     if not ids:
         return []
 
-    channels = _channels_for(cat, urg, rsn)
-    coalesce = coalesce_unread and not channels and entity_type and entity_id is not None
+    resolved = resolve_channels(session, org, topic=topic, urgency=urg)
+    if IN_APP not in resolved:
+        # The notification row is both the feed entry and the FK anchor for
+        # delivery rows, so "no in_app" means nothing lands anywhere. That is
+        # what an admin disabling a topic's in_app asks for (DR 0003 S-5:
+        # muted = not inserted); external-without-feed-row would need its own
+        # schema and is deliberately unsupported.
+        log.info("notify(%s): in_app disabled by policy — nothing inserted", action)
+        return []
+    external = sorted(c for c in resolved if c != IN_APP)
+
+    coalesce = (
+        coalesce_unread
+        and not external
+        and action is not None
+        and entity_type
+        and entity_id is not None
+    )
     updated: list[Notification] = []
     if coalesce:
         remaining: list[int] = []
@@ -290,16 +613,16 @@ def notify(
             existing = session.exec(
                 select(Notification)
                 .where(
-                    Notification.user_id == user_id,
+                    Notification.user_id == normalize_id(user_id),
                     # The org axis is part of the coalesce identity (DR 0001
                     # T5, defect T-6): where hosts' entity ids are not
                     # globally unique, an org-2 emit must never fold into —
-                    # and overwrite — an org-1 row for the same (user, kind,
+                    # and overwrite — an org-1 row for the same (user, action,
                     # entity).
-                    Notification.org_id == org,
-                    Notification.kind == kind,
+                    Notification.org_id == normalize_id(org),
+                    Notification.action == action,
                     Notification.entity_type == entity_type,
-                    Notification.entity_id == entity_id,
+                    Notification.entity_id == normalize_id(entity_id),
                     Notification.read_at.is_(None),
                     # An archived row has left the recipient's inbox. Folding a
                     # new event into it would update something they can no
@@ -314,6 +637,14 @@ def notify(
                 continue
             existing.title = title
             existing.body = merge_body(existing.body, body) if merge_body else body
+            if data is not None:
+                existing.data = data  # latest data wins, like the title (DR 0003 S-3)
+            # The fold IS the latest event, so its classification and template
+            # come along with its text — a pre-0004 row (topic NULL) gets
+            # labeled on first fold, and U-4's renderer must never pair v2
+            # data with a stale v1 template.
+            existing.topic = topic
+            existing.template = template
             existing.created_at = datetime.utcnow()
             session.add(existing)
             updated.append(existing)
@@ -322,25 +653,37 @@ def notify(
             return updated
 
     created: list[Notification] = []
+    def _locale_for(user_id: Any) -> Optional[str]:
+        """Per RECIPIENT, not per emit: one notify can fan out to people who
+        read different languages, so this cannot be hoisted out of the loop."""
+        if locale is not None:
+            return locale
+        if _locale_resolver is None:
+            return None
+        return _locale_resolver(session, user_id)
+
     for user_id in ids:
         n = Notification(
-            user_id=user_id,
-            org_id=org,
-            kind=kind,
-            category=cat,
+            locale=_locale_for(user_id),
+            user_id=normalize_id(user_id),
+            org_id=normalize_id(org),
+            action=action,
+            topic=topic,
+            nature=nat,
             urgency=urg,
-            reason=rsn,
             entity_type=entity_type,
-            entity_id=entity_id,
+            entity_id=normalize_id(entity_id),
             title=title,
             body=body,
             link=link,
+            template=template,
+            data=data,
         )
         session.add(n)
         created.append(n)
     session.flush()  # ids for the delivery rows
     for n in created:
-        for channel in channels:
+        for channel in external:
             session.add(NotificationDelivery(notification_id=n.id, channel=channel))
     return updated + created
 
@@ -348,7 +691,7 @@ def notify(
 # ── feed / read state ────────────────────────────────────────────────────────
 
 
-def unread_count(session: Session, user_id: int) -> int:
+def unread_count(session: Session, user_id: Any) -> int:
     """Unread rows still in the inbox. Archived rows are excluded — they have left
     the recipient's list, so counting them would leave a badge pointing at nothing.
 
@@ -367,13 +710,14 @@ def unread_count(session: Session, user_id: int) -> int:
 
 def list_feed(
     session: Session,
-    user_id: int,
+    user_id: Any,
     *,
     state: str = "open",
     unread_only: bool = False,
-    category: Optional[Category] = None,
+    nature: Optional[Nature] = None,
     page: int = 1,
     page_size: int = 20,
+    category: Optional[Nature] = None,  # deprecated alias for nature (0.15 name)
 ) -> tuple[list[Notification], int]:
     """One page of the recipient's feed plus the filtered total, paged in SQL.
 
@@ -383,6 +727,13 @@ def list_feed(
     shared snapshot: a commit landing between them can skew total against the
     page by a row — the standard COUNT + LIMIT/OFFSET trade, transient and
     self-healing on the next poll."""
+    if category is not None:
+        warnings.warn(
+            "list_feed(category=...) is deprecated: the parameter is nature= now",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        nature = nature if nature is not None else category
     conditions = _recipient_conditions(session, user_id)
     if state == "open":
         conditions.append(Notification.archived_at.is_(None))
@@ -390,8 +741,8 @@ def list_feed(
         conditions.append(Notification.archived_at.is_not(None))
     if unread_only:
         conditions.append(Notification.read_at.is_(None))
-    if category is not None:
-        conditions.append(Notification.category == category)
+    if nature is not None:
+        conditions.append(Notification.nature == nature)
     total = session.exec(
         select(sa_func.count()).select_from(Notification).where(*conditions)
     ).one()
@@ -405,20 +756,25 @@ def list_feed(
     return list(rows), total
 
 
-def _owned(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def _owned(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """The row, iff it belongs to this recipient — and, when a request context
     supplies an org, to this org. A cross-org id probe answers exactly like a
     missing row (404 at the router), never confirming the row exists."""
     n = session.get(Notification, notification_id)
-    if n is None or n.user_id != user_id:
+    # Compared through the storage form on BOTH sides. This check is in Python
+    # rather than SQL, so it is the one ownership test that does not go through
+    # ``_recipient_conditions``: without normalising here, a host whose resolver
+    # hands over an int gets `'1' != 1` and every read of its own row answers
+    # 404. Which is what this package's own router tests caught.
+    if n is None or n.user_id != normalize_id(user_id):
         return None
     org_id = current_org_id(session)
-    if org_id is not None and n.org_id != org_id:
+    if org_id is not None and n.org_id != normalize_id(org_id):
         return None
     return n
 
 
-def mark_read(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def mark_read(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Mark one owned row read (idempotent); None when :func:`_owned` says the
     row is not this recipient's — or, under an org context, not this org's."""
     n = _owned(session, user_id, notification_id)
@@ -432,7 +788,7 @@ def mark_read(session: Session, user_id: int, notification_id: int) -> Optional[
     return n
 
 
-def mark_all_read(session: Session, user_id: int) -> int:
+def mark_all_read(session: Session, user_id: Any) -> int:
     """Every unread row, archived ones included — a superset of what
     :func:`unread_count` counts, so this can never leave the badge non-zero."""
     result = session.execute(
@@ -452,7 +808,7 @@ def mark_all_read(session: Session, user_id: int) -> int:
 # have read it, and clear it only when they act on it or file it away.
 
 
-def archive(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def archive(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Idempotent: archiving an archived row is a no-op, not an error.
 
     Sequentially that also keeps the original timestamp; two *concurrent*
@@ -473,7 +829,7 @@ def archive(session: Session, user_id: int, notification_id: int) -> Optional[No
     return n
 
 
-def unarchive(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def unarchive(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Back into the inbox. Read state is untouched — the two axes are independent,
     so restoring a row does not make it unread again."""
     n = _owned(session, user_id, notification_id)
@@ -487,7 +843,7 @@ def unarchive(session: Session, user_id: int, notification_id: int) -> Optional[
     return n
 
 
-def archive_read(session: Session, user_id: int) -> int:
+def archive_read(session: Session, user_id: Any) -> int:
     """Bulk "clear what I've dealt with": archives the recipient's read rows and
     leaves unread ones alone. Never archives unread rows — that would hide
     something the recipient has not seen."""
@@ -572,13 +928,15 @@ def dispatch_pending(engine, *, limit: int = 100) -> int:
                 _delivery_t.c.attempts,
                 _notification_t.c.user_id,
                 _notification_t.c.org_id,
-                _notification_t.c.kind,
-                _notification_t.c.category,
+                _notification_t.c.action,
+                _notification_t.c.topic,
+                _notification_t.c.nature,
                 _notification_t.c.urgency,
-                _notification_t.c.reason,
                 _notification_t.c.title,
                 _notification_t.c.body,
                 _notification_t.c.link,
+                _notification_t.c.data,
+                _notification_t.c.locale,
                 _notification_t.c.created_at,
             )
             .select_from(
@@ -622,14 +980,16 @@ def dispatch_pending(engine, *, limit: int = 100) -> int:
             channel=r.channel,
             recipient_user_id=r.user_id,
             org_id=r.org_id,
-            kind=r.kind,
-            category=r.category,
+            action=r.action,
+            topic=r.topic,
+            nature=r.nature,
             urgency=r.urgency,
-            reason=r.reason,
             title=r.title,
             body=r.body,
             link=r.link,
+            data=r.data,
             created_at=r.created_at,
+            locale=r.locale,
         )
         try:
             adapter.send(payload)

@@ -124,7 +124,7 @@ def test_coalescing_never_merges_into_an_archived_row(session, ambient_kind):
     )
 
     rows = session.exec(
-        select(Notification).where(Notification.user_id == 1)
+        select(Notification).where(Notification.user_id == "1")
     ).all()
     assert len(rows) == 2, "the archived row was reused instead of a fresh one"
     assert session.get(Notification, first.id).title == "v1"  # untouched
@@ -145,7 +145,7 @@ def test_coalescing_still_merges_into_a_live_row(session, ambient_kind):
     )
 
     rows = session.exec(
-        select(Notification).where(Notification.user_id == 1)
+        select(Notification).where(Notification.user_id == "1")
     ).all()
     assert len(rows) == 1
     assert rows[0].id == first.id and rows[0].title == "v2"

@@ -19,9 +19,23 @@ from asas_notifications.service import MAX_ATTEMPTS
 from conftest import emit
 
 
-def test_unregistered_kind_fails_loud(session):
-    with pytest.raises(LookupError):
-        notifications.notify(session, [1], "never.registered", title="x")
+def test_action_without_axes_fails_loud(session):
+    """DR 0003: there is no kind catalog to default from — an action emitted
+    without its axes is the new "unregistered kind" and fails just as loud
+    (TypeError at the call site, nothing inserted)."""
+    with pytest.raises(TypeError, match="axis"):
+        notifications.notify(session, [1], "never.declared", title="x")
+
+
+def test_unknown_topic_fails_loud(session):
+    """The one reference an emit can get wrong that management depends on:
+    policy and preferences key on topic, so an unseeded topic is a catalog
+    mistake."""
+    with pytest.raises(LookupError, match="topic"):
+        notifications.notify(
+            session, [1], "job.publish",
+            topic="never.seeded", nature="info", urgency="low", title="x",
+        )
 
 
 def test_normal_kind_routes_email_low_stays_in_app(session, kind, ambient_kind):
@@ -30,16 +44,16 @@ def test_normal_kind_routes_email_low_stays_in_app(session, kind, ambient_kind):
     deliveries = session.exec(select(NotificationDelivery)).all()
     assert {d.channel for d in deliveries} == {"email"}
     notes = session.exec(select(Notification)).all()
-    assert {n.user_id for n in notes} == {1, 2}
+    assert {n.user_id for n in notes} == {"1", "2"}
     emailed = {d.notification_id for d in deliveries}
     assert all(
-        session.get(Notification, nid).user_id == 1 for nid in emailed
+        session.get(Notification, nid).user_id == "1" for nid in emailed
     )
 
 
 def test_actor_exclusion_and_dedupe(session, kind):
     rows = emit(session, kind, [1, 1, 2], actor_user_id=2)
-    assert [n.user_id for n in rows] == [1]
+    assert [n.user_id for n in rows] == ["1"]
 
 
 def test_recipient_filter_applies_with_record(session, kind):
@@ -49,7 +63,7 @@ def test_recipient_filter_applies_with_record(session, kind):
     rows = emit(
         session, kind, [1, 3], record=object(), entity_type="team", entity_id=9
     )
-    assert [n.user_id for n in rows] == [1]
+    assert [n.user_id for n in rows] == ["1"]
 
 
 def test_coalesce_unread_updates_in_place(session, ambient_kind):
@@ -67,10 +81,13 @@ def test_coalesce_unread_updates_in_place(session, ambient_kind):
 
 
 def test_suppressed_context_no_ops_but_validates(session, kind):
+    """Suppression silences delivery, never call-site mistakes: the axes are
+    still required inside the block (the DR 0003 analog of the old
+    unregistered-kind LookupError)."""
     with notifications.suppressed():
         assert notifications.notify(session, [1], kind, title="x") == []
-        with pytest.raises(LookupError):
-            notifications.notify(session, [1], "never.registered", title="x")
+        with pytest.raises(TypeError, match="axis"):
+            notifications.notify(session, [1], "never.declared", title="x")
     assert session.exec(select(Notification)).all() == []
 
 
@@ -203,7 +220,7 @@ def test_record_without_entity_type_fails_loud_not_unfiltered(session, kind):
     # record alone is fine, nothing to run
     notifications.configure_recipient_filter(None)
     rows = emit(session, kind, [1, 3], record=object(), entity_id=9)
-    assert [n.user_id for n in rows] == [1, 3]
+    assert [n.user_id for n in rows] == ["1", "3"]
 
 
 def test_the_filter_runs_even_without_the_record(session, kind):
@@ -224,7 +241,7 @@ def test_the_filter_runs_even_without_the_record(session, kind):
     notifications.configure_recipient_filter(_filter)
     rows = emit(session, kind, [1, 3], entity_type="project", entity_id=9)
 
-    assert [n.user_id for n in rows] == [1]
+    assert [n.user_id for n in rows] == ["1"]
     assert seen == {"entity_type": "project", "entity_id": 9, "record": None}
 
 
@@ -238,7 +255,7 @@ def test_a_subjectless_notification_needs_no_record(session, kind):
         lambda s, ids, entity_type, entity_id, record: [u for u in ids if u != 3]
     )
     rows = emit(session, kind, [1, 3])
-    assert [n.user_id for n in rows] == [1, 3]
+    assert [n.user_id for n in rows] == ["1", "3"]
 
 
 def test_the_guard_is_inert_without_a_configured_filter(session, kind):
@@ -246,7 +263,7 @@ def test_the_guard_is_inert_without_a_configured_filter(session, kind):
     wrong by omitting record — there is no filter to skip."""
     notifications.configure_recipient_filter(None)
     rows = emit(session, kind, [1, 3], entity_type="project", entity_id=9)
-    assert [n.user_id for n in rows] == [1, 3]
+    assert [n.user_id for n in rows] == ["1", "3"]
 
 
 def test_contextless_emit_fails_loud_before_flush(session, kind):
@@ -260,13 +277,13 @@ def test_contextless_emit_fails_loud_before_flush(session, kind):
     # the session survives untouched: no pending rows, no rollback needed
     assert session.exec(select(Notification)).all() == []
     rows = emit(session, kind, [1], org_id=7)  # the background-producer shape
-    assert [n.org_id for n in rows] == [7]
+    assert [n.org_id for n in rows] == ["7"]
 
 
 def test_explicit_org_id_beats_the_resolver(session, kind):
     notifications.configure_context_resolver(lambda s: (0, 1))
     rows = emit(session, kind, [1], org_id=9)
-    assert [n.org_id for n in rows] == [9]
+    assert [n.org_id for n in rows] == ["9"]
 
 
 def test_coalesce_never_crosses_orgs(session, ambient_kind):
@@ -286,8 +303,8 @@ def test_coalesce_never_crosses_orgs(session, ambient_kind):
     )
     rows = session.exec(select(Notification).order_by(Notification.org_id)).all()
     assert [(n.org_id, n.title) for n in rows] == [
-        (1, "Org 1 event"),
-        (2, "Org 2 event"),
+        ("1", "Org 1 event"),
+        ("2", "Org 2 event"),
     ]
     # same-org repeat still coalesces: org 2's second emit updates in place
     emit(
@@ -296,7 +313,7 @@ def test_coalesce_never_crosses_orgs(session, ambient_kind):
     )
     rows = session.exec(select(Notification).order_by(Notification.org_id)).all()
     assert [(n.org_id, n.title) for n in rows] == [
-        (1, "Org 1 event"),
-        (2, "Org 2 edited"),
+        ("1", "Org 1 event"),
+        ("2", "Org 2 edited"),
     ]
 
