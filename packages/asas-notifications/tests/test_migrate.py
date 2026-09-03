@@ -202,3 +202,91 @@ def test_migration_0003_rebuilds_an_invalid_concurrent_index(engine):
         row = conn.execute(validity).one()
     assert row.indisvalid is True
     assert row.indisunique is False  # the migration's definition, not the leftover
+
+
+def test_migration_0004_renames_in_place_and_seeds_general(engine):
+    """0004 renames kind→action and category→nature with data surviving in
+    place, adds the axis columns, creates the config tables, and seeds the
+    `general` platform topic the ad hoc path and the register_kind shim rely
+    on."""
+    command.upgrade(_config(engine), "0003")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO notification "
+                "(org_id, user_id, kind, category, urgency, reason, title, created_at) "
+                "VALUES (1, 1, 'workflow.approval_requested', 'action', 'normal', "
+                "'participant', 'Budget change', '2026-01-01')"
+            )
+        )
+
+    asas_notifications.migrate(engine)
+
+    inspector = sa.inspect(engine)
+    cols = {c["name"] for c in inspector.get_columns("notification")}
+    assert {"action", "nature", "topic", "data", "template"} <= cols
+    assert "kind" not in cols and "category" not in cols
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa.text("SELECT action, nature, topic FROM notification")
+        ).one()
+        assert row.action == "workflow.approval_requested"
+        assert row.nature == "action"
+        assert row.topic is None  # historical rows are deliberately unbackfilled
+        seeded = conn.execute(
+            sa.text(
+                "SELECT key, org_id FROM notification_topic WHERE key = 'general'"
+            )
+        ).one()
+        assert seeded.org_id is None  # a platform row
+    assert inspector.has_table("notification_channel_policy")
+
+
+def test_own_post_rename_schema_without_version_table_gets_honest_error(engine):
+    """After 0004 the sentinel columns are action/nature. Losing only the
+    version table must NOT be misdiagnosed as an unrelated table (whose
+    remedy — rename it away — would destroy real notification data)."""
+    asas_notifications.migrate(engine)
+    with engine.begin() as conn:
+        conn.execute(sa.text(f"DROP TABLE {VERSION_TABLE}"))
+    with pytest.raises(RuntimeError, match="version table|stamp"):
+        asas_notifications.migrate(engine)
+
+
+def test_adoption_still_accepts_the_baseline_vocabulary(engine):
+    """The pre-rename shape (kind/category) is still the adoptable baseline."""
+    command.upgrade(_config(engine), _BASELINE)
+    with engine.begin() as conn:
+        conn.execute(sa.text(f"DROP TABLE {VERSION_TABLE}"))
+    asas_notifications.migrate(engine)  # must adopt and upgrade to head
+    cols = {c["name"] for c in sa.inspect(engine).get_columns("notification")}
+    assert "action" in cols and "kind" not in cols
+
+
+def test_half_renamed_table_is_refused_before_the_stamp(engine):
+    """One pair renamed, the other not (a crashed rename, or hand edits): the
+    guard must refuse with guidance BEFORE stamping — stamping would replay the
+    chain and crash raw inside 0004 on the pair that already moved."""
+    command.upgrade(_config(engine), _BASELINE)
+    with engine.begin() as conn:
+        conn.execute(sa.text(f"DROP TABLE {VERSION_TABLE}"))
+        conn.execute(sa.text("ALTER TABLE notification RENAME COLUMN kind TO action"))
+    with pytest.raises(RuntimeError, match="PARTIALLY renamed"):
+        asas_notifications.migrate(engine)
+
+
+def test_downgrade_0004_backfills_null_actions(engine):
+    """Ad hoc emits write action=NULL; the 0.15 kind column is NOT NULL, so
+    the downgrade must backfill instead of dying half-reverted."""
+    asas_notifications.migrate(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO notification "
+                "(org_id, user_id, action, nature, urgency, reason, title, created_at) "
+                "VALUES (1, 1, NULL, 'info', 'low', 'participant', 'ad hoc', '2026-01-01')"
+            )
+        )
+    command.downgrade(_config(engine), "0003")
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT kind FROM notification")).scalar() == "ad_hoc"
