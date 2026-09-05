@@ -605,3 +605,57 @@ def test_overlapping_sweeps_announce_a_breach_once(app_module, agents):
         f"{len(claims)} claims survived — the uniqueness constraint is not "
         f"arbitrating, so two sweeps could both announce this breach"
     )
+
+def test_the_escalation_email_actually_leaves_the_building(app_module, agents):
+    """An external delivery reaches an adapter, not just the outbox.
+
+    Every other notification test here asserts on the in-app row, which the
+    emit writes directly. That leaves the whole external path unchecked: the
+    routing policy picks a channel name, `dispatch_pending` looks for an
+    adapter under that exact name, and a miss is recorded as `skipped` on the
+    row rather than raised. So a host whose adapter is registered under a
+    different name delivers nothing, for as long as nobody looks at the outbox.
+
+    That is what this host did from extraction until the fix beside it: it
+    registered "log" while the policy asked for "email".
+
+    Asserting on the STATUS rather than on the adapter's own record is
+    deliberate. A test that only counts what the adapter received passes when
+    no adapter is found at all, because then nothing is received and nothing
+    complains.
+    """
+    from sqlalchemy import select
+
+    from app.wiring import workflow as workflow_wiring
+
+    with Session(app_module.engine) as session:
+        ticket = _ticket(session, assignee_id=agents["agent"].id)
+        requester = session.get(type(agents["agent"]), agents["agent"].id)
+        workflow_wiring.request_escalation(session, ticket, requester)
+        session.commit()
+
+    handled = asas_notifications.dispatch_pending(app_module.engine)
+    assert handled, "the dispatch pass found nothing to do"
+
+    with Session(app_module.engine) as session:
+        rows = (
+            session.execute(select(asas_notifications.NotificationDelivery))
+            .scalars()
+            .all()
+        )
+
+    assert rows, "the emit wrote no outbox row, so nothing was ever going to be sent"
+    statuses = {r.status for r in rows}
+    # Compared as enum MEMBERS, not through str(). DeliveryStatus is declared
+    # `(str, Enum)` rather than `enum.StrEnum`, so `str(DeliveryStatus.sent)`
+    # is "DeliveryStatus.sent" and every string comparison against it silently
+    # fails. Worth knowing for any host on 3.11+ whose own enums are StrEnum.
+    assert asas_notifications.DeliveryStatus.skipped not in statuses, (
+        "a delivery was skipped, which is what happens when no adapter is "
+        "registered under the channel name the routing policy returns: "
+        f"{[(r.channel, r.status.value, r.last_error) for r in rows]}"
+    )
+    assert statuses == {asas_notifications.DeliveryStatus.sent}, (
+        f"expected every delivery sent, got "
+        f"{[(r.channel, r.status.value) for r in rows]}"
+    )

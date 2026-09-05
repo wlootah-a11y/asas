@@ -121,6 +121,19 @@ def configure() -> None:
     )
 
     # Delivery channel. The logging adapter is the package's own, and is the
-    # honest default for a reference host: a real one registers an email or chat
-    # adapter here, and that is the only line that changes.
-    notifications.register_adapter("log", notifications.LoggingAdapter())
+    # honest default for a reference host: a real one swaps the adapter, and
+    # that is the only line that changes.
+    #
+    # **The NAME has to be the one the routing policy returns.** `_channels_for`
+    # sends everything above `urgency low` to a channel called "email", so an
+    # adapter registered under any other name is never found: `dispatch_pending`
+    # writes the outbox row, fails to resolve an adapter for "email", and marks
+    # the row `skipped` with "no adapter registered for channel". No exception,
+    # no log at the emit, nothing that reads as broken.
+    #
+    # This host registered "log" from extraction until now, which means it has
+    # never delivered a single external notification, and its tests did not
+    # notice because they assert on the in-app row rather than the outbox.
+    # `test_the_escalation_email_actually_leaves_the_building` is the test that
+    # would have caught it.
+    notifications.register_adapter("email", notifications.LoggingAdapter())
