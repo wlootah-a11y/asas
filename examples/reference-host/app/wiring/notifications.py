@@ -22,6 +22,7 @@ from typing import Iterable, Optional
 import asas_access
 import asas_notifications as notifications
 from asas_notifications import NotificationTopic
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..models import DEFAULT_ORG_ID, Agent, Ticket
@@ -111,9 +112,22 @@ def seed(session: Session) -> None:
     topic (``general``, where ad hoc emits land); every topic the host emits
     into by name must be seeded here first, because an unknown topic raises at
     the emit site rather than routing somewhere surprising.
+
+    The check below is only the fast path — two replicas booting at once both
+    read "no row" before either writes, the same shape as the SLA sweep's
+    claim in ``jobs.py``, and the same rule applies: idempotence under
+    concurrency is the database's uniqueness rule (the platform-key index,
+    package migration ``0005``), not the query. Losing that race surfaces as
+    an ``IntegrityError``, caught under a savepoint so the rest of the seed
+    transaction survives.
     """
     if not session.exec(
         select(NotificationTopic).where(NotificationTopic.key == TOPIC_TICKETS)
     ).first():
-        session.add(NotificationTopic(key=TOPIC_TICKETS, name="Tickets"))
+        savepoint = session.begin_nested()
+        try:
+            session.add(NotificationTopic(key=TOPIC_TICKETS, name="Tickets"))
+            savepoint.commit()
+        except IntegrityError:
+            savepoint.rollback()  # a concurrent boot seeded it first
     session.commit()

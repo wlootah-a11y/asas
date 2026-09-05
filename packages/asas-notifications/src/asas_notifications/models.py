@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from sqlalchemy import JSON, CheckConstraint, Column
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -180,6 +180,17 @@ class NotificationTopic(SQLModel, table=True):
     __tablename__ = "notification_topic"
     __table_args__ = (
         UniqueConstraint("org_id", "key", name="uq_notification_topic_org_key"),
+        # The composite above never arbitrates platform rows — their org_id is
+        # NULL and SQL NULLs compare distinct — so platform-key uniqueness is
+        # this partial index (migration 0005). Seeders keep check-then-insert
+        # as the fast path and catch IntegrityError for the race it loses.
+        Index(
+            "uq_notification_topic_platform_key",
+            "key",
+            unique=True,
+            postgresql_where=text("org_id IS NULL"),
+            sqlite_where=text("org_id IS NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
