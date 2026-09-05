@@ -1,7 +1,8 @@
 """asas-notifications.
 
 Contract rows: **Routers** (``build_router``), **Schema** (``migrate``),
-**Host hooks** (``configure_context_resolver``, ``configure_recipient_filter``).
+**Seeding** (the topic vocabulary), **Host hooks**
+(``configure_context_resolver``, ``configure_recipient_filter``).
 
 Also one third of the **escalation composition** (see ``workflow.py``): this
 package supplies the *telling*, and knows nothing about approvals.
@@ -20,16 +21,19 @@ from typing import Iterable, Optional
 
 import asas_access
 import asas_notifications as notifications
-from sqlmodel import Session
+from asas_notifications import NotificationTopic
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 
 from ..models import DEFAULT_ORG_ID, Agent, Ticket
 
-# Kinds are declared, not invented at the call site: the taxonomy decides how a
-# recipient's inbox groups and sorts the row.
-KIND_TICKET_ASSIGNED = "ticket.assigned"
-KIND_ESCALATION_REQUESTED = "ticket.escalation_requested"
-KIND_ESCALATION_DECIDED = "ticket.escalation_decided"
-KIND_SLA_BREACHED = "ticket.sla_breached"
+# The one notification reference that IS declared: topics are rows, seeded
+# below, because routing policy and (later) preferences key on them — an emit
+# into an unseeded topic fails loud. Everything else travels on the emit
+# itself (DR 0003): the *action* is the app's own `entity.verb` reference,
+# declared nowhere, and the nature/urgency/reason axes are stated at the call
+# site — see the `notify()` calls in `jobs.py` and `workflow.py`.
+TOPIC_TICKETS = "tickets"
 
 
 def _context_resolver(session: Session) -> Optional[tuple[int, int]]:
@@ -95,32 +99,35 @@ def configure() -> None:
     notifications.configure_context_resolver(_context_resolver)
     notifications.configure_recipient_filter(_recipient_filter)
 
-    notifications.register_kind(
-        KIND_TICKET_ASSIGNED,
-        category=notifications.Category.action,
-        urgency=notifications.Urgency.normal,
-        reason=notifications.Reason.participant,
-    )
-    notifications.register_kind(
-        KIND_ESCALATION_REQUESTED,
-        category=notifications.Category.action,
-        urgency=notifications.Urgency.high,
-        reason=notifications.Reason.requested,
-    )
-    notifications.register_kind(
-        KIND_ESCALATION_DECIDED,
-        category=notifications.Category.info,
-        urgency=notifications.Urgency.normal,
-        reason=notifications.Reason.participant,
-    )
-    notifications.register_kind(
-        KIND_SLA_BREACHED,
-        category=notifications.Category.warning,
-        urgency=notifications.Urgency.high,
-        reason=notifications.Reason.watching,
-    )
-
     # Delivery channel. The logging adapter is the package's own, and is the
     # honest default for a reference host: a real one registers an email or chat
     # adapter here, and that is the only line that changes.
     notifications.register_adapter("log", notifications.LoggingAdapter())
+
+
+def seed(session: Session) -> None:
+    """Step 5. The topic vocabulary is the host's, and it is *data*.
+
+    Idempotent, like every seed. The package migration seeds one platform
+    topic (``general``, where ad hoc emits land); every topic the host emits
+    into by name must be seeded here first, because an unknown topic raises at
+    the emit site rather than routing somewhere surprising.
+
+    The check below is only the fast path — two replicas booting at once both
+    read "no row" before either writes, the same shape as the SLA sweep's
+    claim in ``jobs.py``, and the same rule applies: idempotence under
+    concurrency is the database's uniqueness rule (the platform-key index,
+    package migration ``0005``), not the query. Losing that race surfaces as
+    an ``IntegrityError``, caught under a savepoint so the rest of the seed
+    transaction survives.
+    """
+    if not session.exec(
+        select(NotificationTopic).where(NotificationTopic.key == TOPIC_TICKETS)
+    ).first():
+        savepoint = session.begin_nested()
+        try:
+            session.add(NotificationTopic(key=TOPIC_TICKETS, name="Tickets"))
+            savepoint.commit()
+        except IntegrityError:
+            savepoint.rollback()  # a concurrent boot seeded it first
+    session.commit()

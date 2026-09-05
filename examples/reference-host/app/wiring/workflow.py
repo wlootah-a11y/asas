@@ -32,9 +32,14 @@ from sqlmodel import Session, select
 
 from ..models import Agent, Ticket
 from .access import ENTITY
-from .notifications import KIND_ESCALATION_DECIDED, KIND_ESCALATION_REQUESTED
+from .notifications import TOPIC_TICKETS
 
 PROCESS_KEY = "ticket_escalation"
+
+# The application actions this composition's emits reference (DR 0003):
+# provenance, declared nowhere — each emit states its own axes.
+ACTION_ESCALATION_REQUESTED = "ticket.escalation_requested"
+ACTION_ESCALATION_DECIDED = "ticket.escalation_decided"
 
 # The outcome strings a completed instance can carry.
 #
@@ -134,7 +139,11 @@ def _on_complete(session: Session, instance, outcome: str) -> None:
         notifications.notify(
             session,
             [instance.initiated_by],
-            KIND_ESCALATION_DECIDED,
+            ACTION_ESCALATION_DECIDED,
+            topic=TOPIC_TICKETS,
+            nature=notifications.Nature.info,
+            urgency=notifications.Urgency.normal,
+            reason=notifications.Reason.participant,
             title=(
                 f"Escalation of ticket #{ticket.id} was "
                 f"{'approved' if approved else 'declined'}"
@@ -178,7 +187,11 @@ def request_escalation(session: Session, ticket: Ticket, requester: Agent):
         notifications.notify(
             session,
             approvers,
-            KIND_ESCALATION_REQUESTED,
+            ACTION_ESCALATION_REQUESTED,
+            topic=TOPIC_TICKETS,
+            nature=notifications.Nature.action,
+            urgency=notifications.Urgency.high,
+            reason=notifications.Reason.requested,
             title=f"Escalation requested for ticket #{ticket.id}",
             actor_user_id=requester.id,
             entity_type="ticket",

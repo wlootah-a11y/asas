@@ -5,6 +5,20 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.16.1 — 2026-09-05
+
+- **Platform-topic uniqueness is now database-enforced** (migration `0005`).
+  `uq_notification_topic_org_key` (org_id, key) never arbitrated *platform*
+  rows — their `org_id` is NULL, and SQL NULLs compare distinct — so a host's
+  topic seeding was an unguardable read-then-write: two replicas booting at
+  once could both insert the "same" platform topic, and policy resolution then
+  had two rows to answer from. A partial unique index on `key WHERE org_id IS
+  NULL` closes the gap; pre-existing duplicates are collapsed to the newest
+  row per key before the build (the package's usual tie-break — nothing
+  references a topic row by id). **Action for hosts:** keep check-then-insert
+  as the seeding fast path, but catch `IntegrityError` on the insert — losing
+  the race is now a signal, not a silent duplicate.
+
 ## 0.16.0 — 2026-09-03
 
 Implements DR 0003 (U-1 + U-2): action-referenced notifications and axis-based,
