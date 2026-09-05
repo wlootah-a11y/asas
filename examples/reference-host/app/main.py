@@ -104,6 +104,7 @@ async def lifespan(app: FastAPI):
     with Session(engine) as session:
         lookups_wiring.seed(session)
         access_wiring.seed(session)
+        notifications_wiring.seed(session)
         workflow_wiring.seed(session)
         jobs_wiring.seed(session)
         # Only writes anything when ENABLE_FAKE_AUTH is set; see fake_auth.py.

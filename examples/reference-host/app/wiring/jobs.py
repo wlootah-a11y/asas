@@ -29,9 +29,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..models import DEFAULT_ORG_ID, SlaNotice, Ticket
-from .notifications import KIND_SLA_BREACHED
+from .notifications import TOPIC_TICKETS
 
 KIND_SLA_SWEEP = "tickets.sla_sweep"
+
+# The application action this sweep's emits reference (DR 0003): provenance and
+# the coalescing identity, declared nowhere — the axes on the call carry the
+# classification.
+ACTION_SLA_BREACHED = "ticket.sla_breached"
 
 # Deliberately short so the suite can observe a tick without waiting.
 SLA_SWEEP_SECONDS = 300
@@ -96,9 +101,9 @@ def _sla_sweep(session: Session, payload: dict | None = None, **_kwargs) -> None
     design is usually a constraint rather than a check.
 
     (``notify(coalesce_unread=True)`` is the package's own answer to the same
-    problem, but it only engages when the kind has no delivery channels — this
-    kind has one, so it would silently not apply. Worth knowing before reaching
-    for it.)
+    problem, but it only engages when the emit routes to no external channel —
+    this one routes at ``high`` urgency, which adds one, so it would silently
+    not apply. Worth knowing before reaching for it.)
     """
     overdue = session.exec(
         select(Ticket).where(
@@ -116,7 +121,14 @@ def _sla_sweep(session: Session, payload: dict | None = None, **_kwargs) -> None
         notifications.notify(
             session,
             [ticket.assignee_id],
-            KIND_SLA_BREACHED,
+            ACTION_SLA_BREACHED,
+            # The four axes travel on the emit (DR 0003) — there is no kind
+            # catalog to default them from. Routing attaches to these, never to
+            # the action string above.
+            topic=TOPIC_TICKETS,
+            nature=notifications.Nature.warning,
+            urgency=notifications.Urgency.high,
+            reason=notifications.Reason.watching,
             title=f"Ticket #{ticket.id} is past its due date",
             entity_type="ticket",
             entity_id=ticket.id,

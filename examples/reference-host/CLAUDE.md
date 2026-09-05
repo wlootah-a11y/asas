@@ -31,7 +31,7 @@ wiring module at a time into it, not to start from this tree.
 | `app/wiring/ratelimit.py` | Host hooks — `configure` |
 | `app/wiring/jobs.py` | Schema, Seeding, Host hooks + **async-notification composition** |
 | `app/wiring/workflow.py` | Schema, Seeding + **escalation composition** |
-| `app/wiring/notifications.py` | Routers, Schema, Host hooks + recipient filtering |
+| `app/wiring/notifications.py` | Routers, Schema, Seeding (topics), Host hooks + recipient filtering |
 | `app/wiring/search.py` | Schema + **classified-record composition**; dialect dispatch |
 | `app/wiring/mcp.py` | Routers — `build_mcp_app`, an ASGI app |
 
