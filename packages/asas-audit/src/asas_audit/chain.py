@@ -25,8 +25,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Iterable, Optional, Sequence
+from datetime import datetime, timezone
+from typing import Any, Optional, Sequence
 
 
 def canonical_bytes(payload: dict[str, Any]) -> bytes:
@@ -41,6 +41,27 @@ def canonical_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(
         payload, sort_keys=True, separators=(",", ":"), default=str
     ).encode()
+
+
+def canonical_timestamp(value: datetime) -> str:
+    """The one spelling of a moment, and it has to be one spelling.
+
+    **Found by running the suite on both engines.** The hash covers
+    ``occurred_at``, so the writer's rendering of it and the verifier's rendering
+    of the value read back must be identical, and they were not: Postgres returns
+    a ``timestamptz`` as an aware datetime, SQLite has no timezone type at all and
+    returns a naive one. The same row therefore hashed one way on write and
+    another on verify, and the whole chain reported as tampered with on SQLite
+    while passing on Postgres.
+
+    A naive value is read as UTC rather than as local time, which is the only
+    choice that is stable: local time depends on the process, so the same row
+    would hash differently on two machines, and it is what SQLite gives back for
+    a value that was UTC when it went in.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def chain_payload(
@@ -61,6 +82,9 @@ def chain_payload(
     them by UUID produce the same shape, and a column type change does not
     invalidate an existing chain.
 
+    ``occurred_at`` goes through :func:`canonical_timestamp` rather than straight
+    to ``isoformat``, for the reason that function explains.
+
     Adding a field here **breaks every existing chain**, because the rebuilt
     payload of an old row would no longer match its stored hash. If a field ever
     has to join it, that is a versioned migration of the chain and not an edit to
@@ -74,7 +98,7 @@ def chain_payload(
         "resource_type": resource_type,
         "resource_id": str(resource_id),
         "payload": payload,
-        "occurred_at": occurred_at.isoformat(),
+        "occurred_at": canonical_timestamp(occurred_at),
     }
 
 

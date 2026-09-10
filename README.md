@@ -22,13 +22,16 @@ repo (DR 0017, epic TEAMY-466).
 | `asas-search` | `asas_search` | dialect-branched chain: PG deep tier |
 | `asas-mcp` | `asas_mcp` | protocol-only variant |
 | `asas-tenancy` | `asas_tenancy` | table-less, router-less, chain-less variant |
+| `asas-audit` | `asas_audit` | table-owning + router variant (depends on `asas-tenancy`) |
 | `asas-cli` | `asas_cli` | developer CLI (`asas add`, `asas new`) — no host contract, install-time only |
 
 All ten planned modules are extracted (Teamy epic TEAMY-466, complete 2026-07-29);
 `asas-cli` is a companion developer tool on top of them, not an eleventh module.
-`asas-tenancy` is not from that epic: it is extracted from a second consumer's
-working implementation, and it is the first package whose subject is a property
-of the *host's own* tables rather than of tables it owns.
+`asas-tenancy` and `asas-audit` are not from that epic: both are extracted from a
+second consumer's working implementation. `asas-tenancy` is the first package
+whose subject is a property of the *host's own* tables rather than of tables it
+owns, and `asas-audit` is the first package to depend on another (see the note
+under **Rules** below).
 Current versions are per package — see each package's `CHANGELOG.md`, and
 [`RELEASING.md`](RELEASING.md) for the tag scheme.
 
@@ -51,6 +54,7 @@ and pinned by a conformance suite (`tests/test_host_contract.py` in every packag
 | `asas-ratelimit` | — | — | — | `configure` |
 | `asas-mcp` | `build_mcp_app` | — | — | — |
 | `asas-tenancy` | — | — | — | migration helpers (`enable_rls`, …) |
+| `asas-audit` | `build_router` | `migrate` | — | — |
 
 Reading the table:
 
@@ -102,7 +106,14 @@ a submodule — a trap that cost real time before it was pinned by a test.
 - **Dual-engine portability**: every package runs on SQLite and Postgres; migrations use batch
   mode, `native_enum=False`, portable server defaults. CI runs both engines per package.
 - **No shared kernel yet**: the contract above is a convention, not a package. An `asas-core`
-  appears only when a third package repeats identical code.
+  appears only when a third package repeats identical code. `asas-audit` depending on
+  `asas-tenancy` is not that rule being broken: it is one package *using* another's subject
+  matter, not shared plumbing being hoisted. The alternative was a second copy of the RLS
+  policy SQL in the audit chain, and on the one table where cross-tenant visibility would be
+  worst, two definitions that can drift was judged the higher cost. The dependency is declared
+  by NAME (`asas-tenancy>=0.1`) rather than by git URL, so it is satisfied by the consumer's
+  own top-level pin: a URL would hardcode the upstream remote (which a mirroring consumer
+  rewrites) and pin one tenancy tag per audit release.
 - **Per-package versioning**: each package versions independently and its tag carries its name
   (`asas-lookups/v0.11.0`), so a pin says exactly what it installs. Lockstep was the original
   choice (DR 0017) and decayed — see [`RELEASING.md`](RELEASING.md) for what went wrong, the

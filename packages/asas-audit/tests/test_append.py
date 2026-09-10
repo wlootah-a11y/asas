@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy.orm.exc import ObjectDeletedError
 from sqlmodel import Session
 
 import asas_audit
 import asas_tenancy
+from asas_audit import chain
 from conftest import ORG_A, ORG_B, append_and_commit
 
 
@@ -85,6 +87,13 @@ def test_history_filters(migrated):
                           resource_type="order", resource_id="1")
         s.commit()
 
+        # Re-pinned after the commit, which is the production rule and not test
+        # scaffolding: the pin is transaction-local, so the reads below run in a
+        # NEW transaction that has no tenant bound and the policy returns nothing.
+        # Forgetting this is how a second query in one request reads an empty
+        # table and looks like missing data.
+        asas_tenancy.set_tenant_guc(s, ORG_A)
+
         assert len(asas_audit.history(s, org_id=ORG_A, actor="alice")) == 2
         assert len(asas_audit.history(s, org_id=ORG_A, action="b")) == 1
         assert len(asas_audit.history(s, org_id=ORG_A, resource_type="invoice")) == 2
@@ -108,7 +117,12 @@ def test_occurred_at_can_predate_the_write(session):
         resource_type="thing", resource_id="1", occurred_at=when,
     )
     session.commit()
-    assert row.occurred_at == when
+
+    # Compared through the canonical form rather than with ``==``, because that
+    # is the comparison the chain itself makes: SQLite has no timezone type and
+    # hands the value back naive, so a bare equality would be asserting a
+    # property of the driver instead of one of this package.
+    assert chain.canonical_timestamp(row.occurred_at) == chain.canonical_timestamp(when)
     assert asas_audit.verify(session, ORG_A).is_intact
 
 
@@ -116,7 +130,7 @@ def test_each_tenant_has_its_own_chain(migrated):
     """Chains are per tenant, so one tenant's first entry links to nothing even
     when another tenant already has a history."""
     append_and_commit(migrated, ORG_A)
-    with Session(migrated) as s:
+    with Session(migrated, expire_on_commit=False) as s:
         asas_tenancy.set_tenant_guc(s, ORG_B)
         row = asas_audit.append(
             s, org_id=ORG_B, actor="carol", action="thing.done",
@@ -124,6 +138,7 @@ def test_each_tenant_has_its_own_chain(migrated):
         )
         s.commit()
         assert row.hash_prev is None
+        asas_tenancy.set_tenant_guc(s, ORG_B)
         assert asas_audit.verify(s, ORG_B).is_intact
 
 
@@ -135,3 +150,39 @@ def test_verify_over_the_stored_rows(migrated):
         report = asas_audit.verify(s, ORG_A)
     assert report.events_checked == 5
     assert report.is_intact
+
+
+def test_reading_after_commit_needs_expire_on_commit_false(requires_enforcement):
+    """A hazard worth meeting as a test rather than as a mystery in production.
+
+    The tenant pin is transaction-local, deliberately: a pooled connection must
+    not carry one request's tenant into the next. But SQLAlchemy's default
+    ``expire_on_commit=True`` means touching any attribute after ``commit()``
+    triggers a refresh, and that refresh runs in a NEW transaction with nothing
+    pinned. The policy then filters the row out and you get
+    ``ObjectDeletedError`` about a row that is sitting right there in the table.
+
+    It is not a bug in either layer: it is what those two correct behaviours do
+    together. The fix is ``expire_on_commit=False`` on the session factory, which
+    is what the README tells a host to do, and what the host this package was
+    extracted from had already arrived at independently.
+    """
+    engine = requires_enforcement
+    with Session(engine, expire_on_commit=True) as s:
+        asas_tenancy.set_tenant_guc(s, ORG_A)
+        row = asas_audit.append(
+            s, org_id=ORG_A, actor="alice", action="thing.done",
+            resource_type="thing", resource_id="1",
+        )
+        s.commit()
+        with pytest.raises(ObjectDeletedError):
+            _ = row.action
+
+    with Session(engine, expire_on_commit=False) as s:
+        asas_tenancy.set_tenant_guc(s, ORG_A)
+        row = asas_audit.append(
+            s, org_id=ORG_A, actor="alice", action="thing.done",
+            resource_type="thing", resource_id="2",
+        )
+        s.commit()
+        assert row.action == "thing.done", "the value is already loaded, so no refresh"

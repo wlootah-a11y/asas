@@ -114,6 +114,15 @@ _SPECS = [
         "migration helpers, conformance kit.",
         "table-less, router-less, chain-less",
     ),
+    PackageSpec(
+        "audit",
+        "asas-audit",
+        "asas_audit",
+        "packages/asas-audit",
+        "Append-only hash-chained audit log that commits with the change it "
+        "describes, with a verification report.",
+        "table-owning + router",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

@@ -49,7 +49,17 @@ def upgrade() -> None:
         "audit_event",
         # The chain order, assigned by the database. Verification walks rows in
         # this order, so it cannot come from the application.
-        sa.Column("seq", sa.BigInteger(), primary_key=True, autoincrement=True),
+        #
+        # `with_variant` is load-bearing: SQLite auto-increments a plain
+        # `INTEGER PRIMARY KEY` and nothing else, so a `BIGINT` primary key is an
+        # ordinary column there and every insert fails its NOT NULL. Postgres
+        # keeps the bigint, which is what an append-only table wants.
+        sa.Column(
+            "seq",
+            sa.BigInteger().with_variant(sa.Integer, "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
         # Opaque string identity throughout: an integer column would force a
         # UUID-keyed host to fork the package. See models.py.
         sa.Column("id", sa.String(64), nullable=False),

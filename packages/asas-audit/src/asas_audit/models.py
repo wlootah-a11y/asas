@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Column, Index, LargeBinary
+from sqlalchemy import BigInteger, Column, Index, Integer, LargeBinary
 from sqlalchemy import JSON
 from sqlmodel import Field, SQLModel
 
@@ -68,7 +68,19 @@ class AuditEvent(SQLModel, table=True):
         Index("ix_audit_event_actor", "org_id", "actor", "occurred_at"),
     )
 
-    seq: Optional[int] = Field(default=None, primary_key=True)
+    #: ``BigInteger`` because an audit log is the table least likely to be
+    #: pruned, and ``with_variant`` because SQLite only auto-increments a plain
+    #: ``INTEGER PRIMARY KEY``: a ``BIGINT`` one is an ordinary column there, so
+    #: every insert would fail its NOT NULL. The dual-engine rule is what surfaces
+    #: this; on Postgres alone the BigInteger would simply have worked.
+    seq: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger().with_variant(Integer, "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     id: str = Field(default_factory=_new_id, index=True, max_length=64)
     org_id: str = Field(index=True, max_length=64)
 

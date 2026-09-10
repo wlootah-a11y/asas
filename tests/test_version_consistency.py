@@ -42,10 +42,10 @@ def _changelog_version(pkg: pathlib.Path) -> str:
 
 
 def test_every_package_is_checked():
-    """Twelve packages: the original ten, plus asas-cli, plus asas-tenancy. The
-    count is asserted deliberately so a thirteenth cannot slip past this file
-    unnoticed."""
-    assert len(PACKAGES) == 12, [p.name for p in PACKAGES]
+    """Thirteen packages: the original ten, plus asas-cli, asas-tenancy and
+    asas-audit. The count is asserted deliberately so a fourteenth cannot slip
+    past this file unnoticed."""
+    assert len(PACKAGES) == 13, [p.name for p in PACKAGES]
 
 
 @pytest.mark.parametrize("pkg", PACKAGES, ids=lambda p: p.name)

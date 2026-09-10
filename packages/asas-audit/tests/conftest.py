@@ -62,11 +62,15 @@ def migrated(engine):
 def session(migrated):
     """A session with the tenant pinned to ORG_A, which is what a request has.
 
-    Pinned per transaction, so it is re-pinned after each commit: that is not
-    test scaffolding, it is what the production rule looks like, and forgetting
-    it is how a second write in a request reads an empty table.
+    ``expire_on_commit=False`` is the host guidance, not test convenience: with
+    the default, reading any attribute of a row after ``commit()`` triggers a
+    refresh, that refresh runs in a NEW transaction which has no tenant pinned
+    (the pin is transaction-local, deliberately), the policy filters the row out,
+    and SQLAlchemy reports ``ObjectDeletedError`` on a row that is sitting right
+    there. ``test_reading_after_commit_needs_expire_on_commit_false`` pins that
+    behaviour so the next reader meets it as a test rather than as a mystery.
     """
-    with Session(migrated) as s:
+    with Session(migrated, expire_on_commit=False) as s:
         asas_tenancy.set_tenant_guc(s, ORG_A)
         yield s
 
@@ -98,8 +102,11 @@ def _clean_context():
 
 
 def append_and_commit(engine, org_id, action="thing.done", **kwargs):
-    """Write one entry the way a host would: pin, append, commit, in one go."""
-    with Session(engine) as s:
+    """Write one entry the way a host would: pin, append, commit, in one go.
+
+    ``expire_on_commit=False`` for the reason the ``session`` fixture gives.
+    """
+    with Session(engine, expire_on_commit=False) as s:
         asas_tenancy.set_tenant_guc(s, org_id)
         row = asas_audit.append(
             s, org_id=org_id, actor="alice", action=action,
