@@ -21,10 +21,14 @@ repo (DR 0017, epic TEAMY-466).
 | `asas-notifications` | `asas_notifications` | table-owning + router variant |
 | `asas-search` | `asas_search` | dialect-branched chain: PG deep tier |
 | `asas-mcp` | `asas_mcp` | protocol-only variant |
+| `asas-tenancy` | `asas_tenancy` | table-less, router-less, chain-less variant |
 | `asas-cli` | `asas_cli` | developer CLI (`asas add`, `asas new`) — no host contract, install-time only |
 
 All ten planned modules are extracted (Teamy epic TEAMY-466, complete 2026-07-29);
 `asas-cli` is a companion developer tool on top of them, not an eleventh module.
+`asas-tenancy` is not from that epic: it is extracted from a second consumer's
+working implementation, and it is the first package whose subject is a property
+of the *host's own* tables rather than of tables it owns.
 Current versions are per package — see each package's `CHANGELOG.md`, and
 [`RELEASING.md`](RELEASING.md) for the tag scheme.
 
@@ -46,6 +50,7 @@ and pinned by a conformance suite (`tests/test_host_contract.py` in every packag
 | `asas-validation` | `build_router` | — | — | — |
 | `asas-ratelimit` | — | — | — | `configure` |
 | `asas-mcp` | `build_mcp_app` | — | — | — |
+| `asas-tenancy` | — | — | — | migration helpers (`enable_rls`, …) |
 
 Reading the table:
 
@@ -79,6 +84,11 @@ Reading the table:
 4. **`configure_*` hooks** — optional callables for host concerns, defaulting to
    single-tenant/no-op. `configure_org_resolver(fn)` is the canonical example: tenancy stays a
    *host* concept, and a host that never calls it runs single-tenant with no tenancy engine at all.
+   `asas-tenancy` fills none of the four slots: it owns no tables, so it has no chain to compose
+   and nothing to seed, and its surface is the tenant context, the RLS session GUC, four helpers a
+   host calls inside its **own** migrations, and a conformance kit. Note that the `org_id` filters
+   in the packages above are defence in depth rather than an isolation boundary; where a host needs
+   the boundary itself, that is what `asas-tenancy` is for.
 5. **Service functions take an explicit `Session`** — no engine, session factory, or settings
    import inside a library.
 
