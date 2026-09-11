@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [asas-lookups, asas-validation, asas-storage, asas-ratelimit, asas-jobs, asas-access, asas-workflow, asas-notifications, asas-search, asas-mcp]
+        package: [asas-lookups, asas-validation, asas-storage, asas-ratelimit, asas-jobs, asas-access, asas-workflow, asas-notifications, asas-search, asas-mcp, asas-graph]
         engine: [sqlite, postgres]
 
     services:

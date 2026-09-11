@@ -105,6 +105,14 @@ _SPECS = [
         "Remote MCP server core (exposes the host to AI clients over MCP).",
         "protocol-only",
     ),
+    PackageSpec(
+        "graph",
+        "asas-graph",
+        "asas_graph",
+        "packages/asas-graph",
+        "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
+        "table-less, router-less (AI tier)",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}
