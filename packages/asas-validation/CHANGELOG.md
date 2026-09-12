@@ -1,9 +1,39 @@
 # Changelog — `asas-validation`
 
-Versions follow semver, and the git tag matches this file: `asas-validation/v0.11.0`.
+Versions follow semver, and the git tag matches this file: `asas-validation/v0.11.1`.
 Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
+
+## 0.11.1 — 2026-09-12
+
+Additive release (DR 0004 phase 1): the **check library**. The declared-rules
+engine is untouched; everything below is new surface.
+
+- **44 checks as plain functions** in six families (dates/time, numbers,
+  cross-field, presence, formats, lists), each named to read as the rule it
+  enforces, returning `None` or a `Violation`. Absent values pass (partial
+  edits), presence checks excepted.
+- **`validate`** — the namespace with two doors: `validate.after(a, b, days=3)`
+  for humans (real functions, IDE-visible signatures) and
+  `validate("after", ...)` for callers holding the name as data. Unknown names
+  raise with the known-checks list.
+- **`enforce(results)`** — drops passes, raises one 422 carrying every
+  violation; envelope unchanged, plus additive `message_key`/`params` keys on
+  check violations for translating clients.
+- **`include_checks(module)`** — hosts add checks by writing functions in
+  their own file; name collisions with existing checks fail loud.
+- **`catalog()`** — machine-readable list of every check (takes, settings,
+  sentence), derived from the functions by introspection.
+- **`configure_clock(fn)`** — the temporal checks (and the declared-rules
+  engine) obtain "today" through a host-configurable clock;
+  date-meets-datetime comparisons coerce instead of raising.
+- `Violation` gains optional `params` and `message_key` fields (defaults keep
+  every existing construction and payload identical).
+- Internal: the known-fields module `catalog.py` was renamed `fields.py` so
+  the new `catalog()` callable cannot shadow a submodule (the host-contract
+  trap pinned by TEAMY-798). Public imports (`register_fields`, `is_known`,
+  `known_fields`) are unchanged.
 
 ## 0.11.0 — 2026-08-25
 

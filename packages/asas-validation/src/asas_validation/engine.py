@@ -11,10 +11,13 @@ for partial updates:
 """
 
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from datetime import date
+
+from .clock import today as _clock_today
 from typing import Any, Mapping, Optional
 
-from . import catalog
+from . import fields as catalog
 from .rules import declared_rules, rules_for
 
 
@@ -23,6 +26,11 @@ class Violation:
     field: str
     code: str
     message: str
+    # For translating clients (DR 0004): a stable key plus the numbers used,
+    # so the message can be rendered in the viewer's language. Optional with
+    # defaults, so pre-0.11.1 constructions are untouched.
+    params: dict = dc_field(default_factory=dict)
+    message_key: str = ""
 
 
 def _effective(
@@ -87,7 +95,7 @@ def evaluate(
     on create). ``context`` supplies related-record values for namespaced fields (see
     ``_effective``). Only rules whose fields the edit touches, and whose values are all
     present, are checked."""
-    today = date.today()
+    today = _clock_today()
     violations: list[Violation] = []
     for rule in rules_for(entity):
         if not any(f in changes for f in rule.fields):
