@@ -46,7 +46,11 @@ def include_checks(module: ModuleType) -> None:
     replacing a shipped check would change behavior everywhere at once."""
     for name, fn in _check_functions(module):
         existing = getattr(validate, name, None)
-        if existing is not None and existing is not fn:
+        if (existing is not None and existing is not fn
+                and getattr(existing, "__module__", None) != fn.__module__):
+            # A same-named function from the SAME module is a re-import or a
+            # reload and replaces silently (idempotence); only a cross-module
+            # collision is a real conflict and fails loud.
             raise ValueError(
                 f"check {name!r} already exists (from {existing.__module__}); "
                 f"rename the function in {module.__name__}"
@@ -79,7 +83,7 @@ def catalog() -> list[dict]:
                 "name": name,
                 "takes": takes,
                 "settings": settings,
-                "sentence": (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else "",
+                "sentence": next(iter((fn.__doc__ or "").strip().splitlines()), ""),
             })
     return sorted(out, key=lambda c: c["name"])
 

@@ -17,6 +17,7 @@ from asas_validation import validate, enforce
 @router.post("/interviews")
 def create_interview(payload: InterviewIn, session=Depends(get_session)):
     job = session.get(Job, payload.job_id)
+    application = session.get(Application, payload.application_id)
     new = payload.model_dump(exclude_unset=True)
     enforce([
         validate.email(new.get("candidate_email"), field="candidate_email"),

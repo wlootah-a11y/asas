@@ -15,6 +15,7 @@ from dataclasses import field as dc_field
 from datetime import date
 
 from .clock import today as _clock_today
+from .clock import years_ago as _shared_years_ago
 from typing import Any, Mapping, Optional
 
 from . import fields as catalog
@@ -55,26 +56,30 @@ def _effective(
 
 def _years_ago(today: date, years: int) -> date:
     """``today`` shifted back ``years`` years, clamping a Feb-29 anchor to Feb-28."""
-    try:
-        return today.replace(year=today.year - years)
-    except ValueError:  # Feb 29 → non-leap target year
-        return today.replace(month=2, day=28, year=today.year - years)
+    return _shared_years_ago(today, years)
+
+
+def _date_of(value):
+    """A datetime column under a date rule must compare, never raise
+    (calendar-naive truncation, same rule as the check library's)."""
+    from datetime import datetime
+    return value.date() if isinstance(value, datetime) else value
 
 
 def _not_future(vals: list, today: date, rule) -> bool:
-    return vals[0] <= today
+    return _date_of(vals[0]) <= today
 
 
 def _not_past(vals: list, today: date, rule) -> bool:
-    return vals[0] >= today
+    return _date_of(vals[0]) >= today
 
 
 def _order(vals: list, today: date, rule) -> bool:
-    return vals[0] <= vals[1]
+    return _date_of(vals[0]) <= _date_of(vals[1])
 
 
 def _max_age(vals: list, today: date, rule) -> bool:
-    return vals[0] >= _years_ago(today, rule.params["years"])
+    return _date_of(vals[0]) >= _years_ago(today, rule.params["years"])
 
 
 _KINDS = {

@@ -25,9 +25,17 @@ engine is untouched; everything below is new surface.
   their own file; name collisions with existing checks fail loud.
 - **`catalog()`** — machine-readable list of every check (takes, settings,
   sentence), derived from the functions by introspection.
-- **`configure_clock(fn)`** — the temporal checks (and the declared-rules
-  engine) obtain "today" through a host-configurable clock;
-  date-meets-datetime comparisons coerce instead of raising.
+- **`configure_clock(fn)`** — the temporal checks and the declared-rules
+  engine obtain "today" through a host-configurable clock (startup-only; a
+  per-request-timezone host installs one callable that reads its own request
+  context). Date-meets-datetime comparisons coerce instead of raising, in
+  the checks and in the engine's kind evaluators alike (calendar-naive
+  truncation — hosts needing timezone-exact day boundaries pass dates).
+- Non-presence checks treat the empty string like ``None`` — absent, so a
+  cleared form field or CSV cell skips the check instead of crashing a
+  comparison. ``after``/``before`` are strict at ``days=0`` (equality
+  violates, as the names promise); with a gap, "at least N days" stays
+  inclusive at exactly N.
 - `Violation` gains optional `params` and `message_key` fields (defaults keep
   every existing construction and payload identical).
 - Internal: the known-fields module `catalog.py` was renamed `fields.py` so

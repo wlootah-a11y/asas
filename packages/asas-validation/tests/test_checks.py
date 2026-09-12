@@ -250,3 +250,85 @@ def test_enforce_collects_everything_and_raises_one_422():
     assert detail[1]["params"]["days"] == 3
     # nothing wrong → enforce is silent
     enforce([None, validate.at_least(3, 2)])
+
+
+# ── review-fix regressions (PR #53) ───────────────────────────────────────────
+
+def test_empty_string_counts_as_absent_for_non_presence_checks():
+    """Forms and CSV rows encode a cleared field as "" — skip, never crash."""
+    assert validate.after("", date(2026, 9, 1)) is None
+    assert validate.not_in_future("") is None
+    assert validate.at_least("", 2) is None
+    assert validate.email("") is None
+    assert validate.unique_items("") is None
+    # the presence family still sees "" as absent and FIRES
+    assert validate.required_when("", True) is not None
+
+
+def test_after_and_before_are_strict_at_zero_days():
+    d0 = date(2026, 9, 10)
+    assert bad(validate.after(d0, d0)).code == "after"
+    assert bad(validate.before(d0, d0)).code == "before"
+    assert validate.after(d0 + timedelta(days=1), d0) is None
+    # with a gap, "at least N days" stays inclusive at exactly N
+    assert validate.after(d0 + timedelta(days=3), d0, days=3) is None
+
+
+def test_unique_items_handles_unhashable_items():
+    assert bad(validate.unique_items([{"day": "mon"}, {"day": "mon"}])).code == "unique_items"
+    assert validate.unique_items([{"day": "mon"}, {"day": "tue"}]) is None
+
+
+def test_not_beyond_survives_leap_day():
+    configure_clock(lambda: date(2028, 2, 29))
+    assert validate.not_beyond(date(2029, 2, 20), years=1) is None
+    assert bad(validate.not_beyond(date(2029, 3, 1), years=1)).code == "not_beyond"
+
+
+def test_contains_none_matches_within_items_only():
+    assert validate.contains_none(["alpha", "beta"], ["a b"]) is None  # never across items
+    assert validate.contains_none("clean text", [""]) is None          # empty term is inert
+    assert bad(validate.contains_none(["has a b inside"], ["a b"])).code == "contains_none"
+
+
+def test_catalog_survives_whitespace_docstrings():
+    mod = types.ModuleType("blank_doc")
+    exec(compile('def odd_check(value, *, field=""):\n    "\\n"\n    return None',
+                 "blank_doc", "exec"), mod.__dict__)
+    mod.odd_check.__module__ = "blank_doc"
+    include_checks(mod)
+    try:
+        entry = next(c for c in catalog() if c["name"] == "odd_check")
+        assert entry["sentence"] == ""
+    finally:
+        from asas_validation import library
+        library._MODULES.remove(mod)
+        delattr(validate, "odd_check")
+
+
+def test_same_module_reinclude_is_idempotent_cross_module_still_fails():
+    m1 = types.ModuleType("reload_mod")
+    exec(compile('def my_check(value, *, field=""):\n    """x"""\n    return None',
+                 "reload_mod", "exec"), m1.__dict__)
+    m1.my_check.__module__ = "reload_mod"
+    include_checks(m1)
+    try:
+        m2 = types.ModuleType("reload_mod")  # the same module, re-executed
+        exec(compile('def my_check(value, *, field=""):\n    """x"""\n    return None',
+                     "reload_mod", "exec"), m2.__dict__)
+        m2.my_check.__module__ = "reload_mod"
+        include_checks(m2)  # replaces silently — a reload, not a conflict
+        assert validate.my_check(1) is None
+    finally:
+        from asas_validation import library
+        library._MODULES[:] = [m for m in library._MODULES
+                               if getattr(m, "__name__", "") != "reload_mod"]
+        delattr(validate, "my_check")
+
+
+def test_declared_engine_coerces_datetime_columns():
+    from asas_validation import Rule, declare_rules, evaluate
+    declare_rules([Rule(entity="job", kind="not_future", fields=("created",),
+                        message="no future", code="c1")])
+    out = evaluate("job", None, {"created": datetime(2020, 1, 1, 10, 0)})
+    assert out == []  # datetime under a date rule compares instead of raising

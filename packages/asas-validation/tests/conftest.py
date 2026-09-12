@@ -4,7 +4,7 @@ resets both so tests never leak into each other."""
 
 import pytest
 
-from asas_validation import declare_rules
+from asas_validation import configure_clock, declare_rules
 from asas_validation import fields as _fields
 
 
@@ -13,3 +13,4 @@ def _reset_registries():
     yield
     declare_rules(())
     _fields._FIELDS.clear()
+    configure_clock(None)
