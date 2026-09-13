@@ -231,7 +231,7 @@ def emirates_id(value, *, field="", message_key=None):
             include_checks(clash)
     finally:
         from asas_validation import library
-        library._MODULES.remove(mod)
+        library._MODULES.pop(mod.__name__, None)
         delattr(validate, "emirates_id")
 
 
@@ -302,7 +302,7 @@ def test_catalog_survives_whitespace_docstrings():
         assert entry["sentence"] == ""
     finally:
         from asas_validation import library
-        library._MODULES.remove(mod)
+        library._MODULES.pop(mod.__name__, None)
         delattr(validate, "odd_check")
 
 
@@ -321,8 +321,7 @@ def test_same_module_reinclude_is_idempotent_cross_module_still_fails():
         assert validate.my_check(1) is None
     finally:
         from asas_validation import library
-        library._MODULES[:] = [m for m in library._MODULES
-                               if getattr(m, "__name__", "") != "reload_mod"]
+        library._MODULES.pop("reload_mod", None)
         delattr(validate, "my_check")
 
 
@@ -332,3 +331,71 @@ def test_declared_engine_coerces_datetime_columns():
                         message="no future", code="c1")])
     out = evaluate("job", None, {"created": datetime(2020, 1, 1, 10, 0)})
     assert out == []  # datetime under a date rule compares instead of raising
+
+
+# ── second-review regressions (PR #53, round 2) ──────────────────────────────
+
+def _mk_module(mod_name, *fn_names):
+    import types as _t
+    m = _t.ModuleType(mod_name)
+    body = "\n".join(
+        f"def {n}(value, *, field=''):\n    'sentence'\n    return None" for n in fn_names
+    )
+    exec(compile(body, mod_name, "exec"), m.__dict__)
+    for n in fn_names:
+        getattr(m, n).__module__ = mod_name
+    return m
+
+
+def test_violation_stays_hashable():
+    """0.11 hosts dedupe violations in sets; params must not break that."""
+    from asas_validation import Violation
+    v = Violation("f", "c", "m", params={"days": 3})
+    assert v in {v}
+
+
+def test_string_transport_values_answer_422_not_500():
+    """CSV/form transport: a provided-but-unparseable value is INVALID data
+    (a violation on the field), never a TypeError that 500s the request; a
+    parseable ISO string simply works."""
+    assert validate.after("2026-02-01", date(2026, 1, 1)) is None
+    assert validate.after("junk", date(2026, 1, 1)).code == "invalid_date"
+    assert validate.not_in_future("   ") is None          # whitespace = absent
+    assert validate.at_least("5", 2) is None
+    assert validate.at_least("N/A", 2).code == "invalid_number"
+    assert validate.at_least(5, "") is None               # absent reference skips
+    assert validate.max_decimals("N/A").code == "invalid_number"
+    assert validate.greater_than("b", 1).code == "invalid_value"
+
+
+def test_money_sums_and_float_artifacts():
+    assert validate.sums_to(3178142.72, 91244163.07, total=94422305.79) is None
+    assert validate.max_decimals(0.1 + 0.2, places=2) is None
+    assert validate.max_decimals(12.256, places=2) is not None
+
+
+def test_no_html_allows_comparison_prose():
+    assert validate.no_html("priced < 100 and qty > 5") is None
+    assert validate.no_html("<b>x</b>").code == "no_html"
+
+
+def test_unique_items_string_and_cross_structure():
+    assert validate.unique_items("aa") is None            # a value, not a collection
+    assert validate.unique_items([{1}, frozenset({1})]).code == "unique_items"
+
+
+def test_include_checks_is_atomic_and_reload_safe():
+    from asas_validation import library
+    m = _mk_module("atomic_mod", "zeta", "after")   # 'after' collides with shipped
+    with pytest.raises(ValueError):
+        include_checks(m)
+    assert not hasattr(validate, "zeta")            # nothing half-applied
+    assert all(c["name"] != "zeta" for c in catalog())
+    # reload: the same module name re-included replaces, never duplicates
+    include_checks(_mk_module("reload2", "my_r"))
+    include_checks(_mk_module("reload2", "my_r"))
+    try:
+        assert sum(1 for c in catalog() if c["name"] == "my_r") == 1
+    finally:
+        library._MODULES.pop("reload2", None)
+        delattr(validate, "my_r")

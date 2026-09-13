@@ -41,3 +41,10 @@ def years_ahead(anchor: date, years: int) -> date:
         return anchor.replace(year=anchor.year + years)
     except ValueError:
         return anchor.replace(month=2, day=28, year=anchor.year + years)
+
+
+def date_of(value):
+    """Datetime→date truncation, THE one copy of the policy (calendar-naive:
+    an aware datetime truncates on its own calendar; hosts needing
+    timezone-exact day boundaries convert before validating)."""
+    return value.date() if isinstance(value, datetime) else value

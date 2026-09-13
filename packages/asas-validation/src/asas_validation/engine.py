@@ -15,6 +15,7 @@ from dataclasses import field as dc_field
 from datetime import date
 
 from .clock import today as _clock_today
+from .clock import date_of as _shared_date_of
 from .clock import years_ago as _shared_years_ago
 from typing import Any, Mapping, Optional
 
@@ -32,6 +33,13 @@ class Violation:
     # defaults, so pre-0.11.1 constructions are untouched.
     params: dict = dc_field(default_factory=dict)
     message_key: str = ""
+
+    def __hash__(self):
+        # A frozen dataclass would derive __hash__ from ALL fields and choke
+        # on the params dict — 0.11.0 Violations were hashable (hosts dedupe
+        # them in sets), so identity stays (field, code, message, key) and
+        # params ride along as detail.
+        return hash((self.field, self.code, self.message, self.message_key))
 
 
 def _effective(
@@ -60,10 +68,9 @@ def _years_ago(today: date, years: int) -> date:
 
 
 def _date_of(value):
-    """A datetime column under a date rule must compare, never raise
-    (calendar-naive truncation, same rule as the check library's)."""
-    from datetime import datetime
-    return value.date() if isinstance(value, datetime) else value
+    """A datetime column under a date rule must compare, never raise —
+    the shared policy from clock.date_of."""
+    return _shared_date_of(value)
 
 
 def _not_future(vals: list, today: date, rule) -> bool:

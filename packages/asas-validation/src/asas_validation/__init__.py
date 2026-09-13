@@ -32,7 +32,7 @@ from .library import catalog, include_checks, validate
 from .router import build_router
 from .rules import Rule, declare_rules, declared_rules, rules_for
 
-__version__ = "0.11.1"
+__version__ = "0.12.0"
 
 __all__ = [
     "Rule",

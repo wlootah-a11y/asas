@@ -35,7 +35,7 @@ class _Validate:
 
 
 validate = _Validate()
-_MODULES: list[ModuleType] = []
+_MODULES: dict[str, ModuleType] = {}
 
 
 def include_checks(module: ModuleType) -> None:
@@ -43,21 +43,24 @@ def include_checks(module: ModuleType) -> None:
     and the catalog. The host calls this once at startup with its own checks
     file; adding a check afterwards means adding a function to that file.
     A name that collides with an existing check fails loud — silently
-    replacing a shipped check would change behavior everywhere at once."""
-    for name, fn in _check_functions(module):
+    replacing a shipped check would change behavior everywhere at once.
+
+    All-or-nothing: names are validated FIRST, then applied, so a collision
+    mid-module can never leave phantom checks (installed on ``validate`` but
+    absent from the catalog). Re-executing the same module (a reload) replaces
+    its functions and its catalog entry — never duplicates them."""
+    functions = list(_check_functions(module))
+    for name, fn in functions:
         existing = getattr(validate, name, None)
         if (existing is not None and existing is not fn
                 and getattr(existing, "__module__", None) != fn.__module__):
-            # A same-named function from the SAME module is a re-import or a
-            # reload and replaces silently (idempotence); only a cross-module
-            # collision is a real conflict and fails loud.
             raise ValueError(
                 f"check {name!r} already exists (from {existing.__module__}); "
                 f"rename the function in {module.__name__}"
             )
+    for name, fn in functions:
         setattr(validate, name, fn)
-    if module not in _MODULES:
-        _MODULES.append(module)
+    _MODULES[module.__name__] = module
 
 
 def catalog() -> list[dict]:
@@ -66,7 +69,7 @@ def catalog() -> list[dict]:
     can never drift from the code. Serves IDE-less callers: agents, docs
     generators, and (a later phase) the rules endpoint."""
     out = []
-    for module in _MODULES:
+    for module in _MODULES.values():
         for name, fn in _check_functions(module):
             sig = inspect.signature(fn)
             takes, settings = [], {}
@@ -89,3 +92,4 @@ def catalog() -> list[dict]:
 
 
 include_checks(_shipped)
+
