@@ -21,10 +21,17 @@ repo (DR 0017, epic TEAMY-466).
 | `asas-notifications` | `asas_notifications` | table-owning + router variant |
 | `asas-search` | `asas_search` | dialect-branched chain: PG deep tier |
 | `asas-mcp` | `asas_mcp` | protocol-only variant |
+| `asas-graph` | `asas_graph` | table-less, router-less, hook-less variant (AI tier: Microsoft Graph client, Teams meetings) |
 | `asas-cli` | `asas_cli` | developer CLI (`asas add`, `asas new`) — no host contract, install-time only |
 
 All ten planned modules are extracted (Teamy epic TEAMY-466, complete 2026-07-29);
 `asas-cli` is a companion developer tool on top of them, not an eleventh module.
+`asas-graph` is not from that epic: it is extracted from an AI engine's working
+implementation and belongs to the **AI tier** (packages that call external
+Microsoft 365 / AI services rather than own tables). It fills none of the four
+slots — everything is an object the host constructs (`GraphSettings`,
+`GraphClient`, `TeamsMeetings`), so there is no `configure` global to reset
+between tests and a process can serve two tenants.
 Current versions are per package — see each package's `CHANGELOG.md`, and
 [`RELEASING.md`](RELEASING.md) for the tag scheme.
 
@@ -46,6 +53,7 @@ and pinned by a conformance suite (`tests/test_host_contract.py` in every packag
 | `asas-validation` | `build_router` | — | — | — |
 | `asas-ratelimit` | — | — | — | `configure` |
 | `asas-mcp` | `build_mcp_app` | — | — | — |
+| `asas-graph` | — | — | — | — (objects: `GraphClient`, `TeamsMeetings`) |
 
 Reading the table:
 
