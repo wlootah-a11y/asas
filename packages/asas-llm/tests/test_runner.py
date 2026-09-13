@@ -193,3 +193,35 @@ def test_configure_and_process_wide_runner():
     assert run(r1.ainvoke("p", {}, input_variable=None)).value == "y"
     asas_llm.configure(prompts=store, model_factory=static_model(FakeListChatModel(responses=["z"])), default_model="m")
     assert asas_llm.runner() is not r1
+
+
+def test_dotted_mustache_variables_render():
+    """Native mustache templating: {{user.name}} is a nested lookup and must
+    render — the old f-string re-writer raised KeyError on every such call."""
+    from asas_llm.prompts import InMemoryPromptStore
+    from asas_llm.runners import to_chat_prompt_template
+
+    store = InMemoryPromptStore()
+    p = store.text("greet", "Hello {{ user.name }}")
+    template = to_chat_prompt_template(p)
+    rendered = template.format_messages(user={"name": "Ana"})
+    assert rendered[-1].content == "Hello Ana"
+
+
+def test_pinned_version_drops_the_default_label():
+    """Langfuse rejects label+version together; a pinned read must not carry
+    the default label along and get silently served a fallback copy."""
+    seen = {}
+
+    class Spy:
+        def get(self, name, *, label=None, version=None):
+            seen.update(label=label, version=version)
+            from asas_llm.prompts import InMemoryPromptStore
+            return InMemoryPromptStore().text(name, "x")
+
+    runner = LLMRunner(model_factory=lambda m, o: None, prompts=Spy(),
+                       default_model="m", default_label="production")
+    runner.get_prompt("p", version=7)
+    assert seen == {"label": None, "version": 7}
+    runner.get_prompt("p")
+    assert seen["label"] == "production"

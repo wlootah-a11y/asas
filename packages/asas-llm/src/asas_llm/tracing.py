@@ -84,17 +84,26 @@ class Tracer(Protocol):
 class NullTracer:
     """No backend. Ids are still minted and handed back, so a host without a
     tracing service (or a test) gets the same result shape and the same
-    ``X-Trace-Id`` header. Handles and updates are kept on the instance for
-    tests to inspect."""
+    ``X-Trace-Id`` header. Recent handles and updates are kept for tests to
+    inspect — BOUNDED, because this is the production default for hosts
+    without Langfuse: an unbounded list retaining every call's full input and
+    output is a linear memory leak in any long-lived service."""
+
+    _KEEP = 256  # most recent; tests inspect the tail, production forgets
 
     def __init__(self) -> None:
         self.traces: list[TraceHandle] = []
         self.updates: list[tuple[str, dict]] = []
         self.flushes = 0
 
+    def _trim(self, items: list) -> None:
+        if len(items) > self._KEEP:
+            del items[: len(items) - self._KEEP]
+
     def start_trace(self, *, id, name, session_id, input=None, metadata=None) -> TraceHandle:
         handle = TraceHandle(id=id, name=name, session_id=session_id, tracer=self, native={"input": input, "metadata": metadata})
         self.traces.append(handle)
+        self._trim(self.traces)
         return handle
 
     def langchain_handler(self, handle: TraceHandle, *, update_parent: bool) -> Any | None:
@@ -102,6 +111,7 @@ class NullTracer:
 
     def update_trace(self, handle: TraceHandle, *, output=None, metadata=None) -> None:
         self.updates.append((handle.id, {"output": output, "metadata": metadata}))
+        self._trim(self.updates)
 
     def flush(self) -> None:
         self.flushes += 1

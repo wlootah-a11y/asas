@@ -17,9 +17,11 @@ from asas_llm import context
 def _clean_context():
     context.clear_request()
     asas_llm.set_runner(None)
-    yield
-    context.clear_request()
-    asas_llm.set_runner(None)
+    asas_llm._settings = None          # configure() state must not leak either:
+    yield                              # runner() lazily rebuilds from it, so a
+    context.clear_request()            # stale value makes the NotConfigured
+    asas_llm.set_runner(None)          # contract test order-dependent.
+    asas_llm._settings = None
 
 
 def run(coro):

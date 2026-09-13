@@ -173,11 +173,32 @@ def test_cold_start_without_registry_serves_local_file(layers):
 
 
 def test_registry_recovers_after_local_fallback(layers):
+    """A failed refresh IS cached for one TTL window (otherwise every request
+    during an outage pays the full registry timeout — the fleet-wide latency
+    the layered store exists to absorb). Recovery therefore happens on the
+    first fetch after the window, not mid-window."""
     registry, store, clock = layers
     registry.up = False
     assert store.get("greet").source == "local"
     registry.up = True
-    assert store.get("greet").source == "langfuse"  # a failure was never cached
+    assert store.get("greet").source in ("local", "cache")  # still inside the window
+    clock["t"] += store.cache_ttl + 1
+    assert store.get("greet").source == "langfuse"  # first post-window fetch recovers
+
+
+def test_outage_probes_once_per_window_not_per_request(layers):
+    """The negative-cache regression pin: during an outage, the dead registry
+    is probed once per TTL window; every other call inside the window is a
+    cache hit that never touches the registry."""
+    registry, store, clock = layers
+    store.get("greet")                      # warm
+    registry.up = False
+    clock["t"] += store.cache_ttl + 1
+    before = registry.calls
+    store.get("greet")                      # pays one probe, caches the miss
+    store.get("greet")
+    store.get("greet")
+    assert registry.calls == before + 1
 
 
 def test_stale_ok_false_skips_cache_layer(tmp_path):
@@ -254,3 +275,15 @@ def test_invalidate(layers):
     store.invalidate("greet")
     store.get("greet")
     assert registry.calls == 2
+
+
+def test_warm_survives_a_corrupt_local_file(tmp_path):
+    """Boot is the wrong moment to crash: registry down + a corrupt shipped
+    file maps to 'unavailable', never a raw PromptFormatError out of warm()."""
+    registry = FlakyStore({})
+    registry.up = False
+    local = tmp_path / "p"
+    local.mkdir()
+    (local / "broken.json").write_text("{not json")
+    store = LayeredPromptStore(registry, LocalPromptStore(local), cache_ttl=1)
+    assert store.warm(["broken"]) == {"broken": "unavailable"}

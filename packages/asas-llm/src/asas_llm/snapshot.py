@@ -99,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
 
     client = make_client(public_key=public, secret_key=secret, host=args.host)
     try:
+        if args.names == []:
+            # nargs="*" makes an empty expansion ($EXTRA_PROMPTS unset) look
+            # like "snapshot nothing", which would exit 0 having written
+            # nothing and ship a stale fallback with no CI signal. Empty is a
+            # mistake; "all prompts" is spelled by omitting --names.
+            print("--names given with no values; omit it to snapshot every prompt", file=sys.stderr)
+            return 2
         report = snapshot(LangfusePromptStore(client), args.dest, args.names, label=args.label)
     finally:
         client.shutdown()

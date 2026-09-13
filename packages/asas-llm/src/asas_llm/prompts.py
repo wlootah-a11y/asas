@@ -310,7 +310,15 @@ class LayeredPromptStore:
         try:
             prompt = self.primary.get(name, label=label, version=version)
         except Exception as exc:  # noqa: BLE001 - any registry failure falls through
-            return self._degraded(key, cached, exc)
+            served = self._degraded(key, cached, exc)
+            # Re-stamp the window on a FAILED refresh too: without this, once
+            # the TTL expires during an outage every single request re-pays
+            # the full registry timeout before serving the stale copy — the
+            # outage the layered store exists to absorb becomes fleet-wide
+            # multi-second latency. One probe per TTL window, not per call.
+            with self._lock:
+                self._cache[key] = _Cached(prompt=served, fetched_at=now)
+            return served
 
         with self._lock:
             self._cache[key] = _Cached(prompt=prompt, fetched_at=now)
@@ -326,8 +334,11 @@ class LayeredPromptStore:
         if self.fallback is not None:
             try:
                 prompt = self.fallback.get(name, label=key[1], version=key[2])
-            except PromptUnavailable as fexc:
-                tried.append(f"local ({fexc})")
+            except Exception as fexc:  # noqa: BLE001 - a corrupt/unreadable local
+                # file (PromptFormatError, OSError) must degrade like a missing
+                # one: boot is the wrong moment to crash, and the documented
+                # contract is one PromptUnavailable naming every layer tried.
+                tried.append(f"local ({type(fexc).__name__}: {fexc})")
             else:
                 self._log(name, f"serving local copy (version {prompt.version})", exc)
                 return prompt
@@ -360,7 +371,7 @@ class LayeredPromptStore:
         for name in names:
             try:
                 report[name] = self.get(name, label=label).source
-            except PromptUnavailable:
+            except Exception:  # noqa: BLE001 - see the docstring: never crash boot
                 report[name] = "unavailable"
         return report
 

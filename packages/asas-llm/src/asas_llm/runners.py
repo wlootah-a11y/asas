@@ -121,33 +121,24 @@ def to_chat_prompt_template(
     variables = set(prompt.variables())
     messages: list[Any] = []
     for role, body in prompt.messages:
-        messages.append((_ROLE_MAP.get(role, role), _to_fstring(body)))
+        # LangChain speaks mustache natively (template_format below), so the
+        # body passes through UNMODIFIED: no brace escaping (JSON examples
+        # survive as-is), and dotted variables ({{user.name}}) keep working —
+        # the previous f-string re-writer turned them into str.format
+        # attribute lookups that raised KeyError on every call.
+        messages.append((_ROLE_MAP.get(role, role), body))
     if history_variable:
         # After the leading system block, before the first non-system message.
         idx = next((i for i, (r, _) in enumerate(prompt.messages) if r not in ("system", "developer")), len(messages))
         messages.insert(idx, MessagesPlaceholder(variable_name=history_variable, optional=True))
     if input_variable and input_variable not in variables:
-        messages.append(("human", "{" + input_variable + "}"))
-    template = ChatPromptTemplate.from_messages(messages)
+        messages.append(("human", "{{" + input_variable + "}}"))
+    template = ChatPromptTemplate.from_messages(messages, template_format="mustache")
     if partial:
         template = template.partial(**{k: v for k, v in partial.items() if k in template.input_variables})
     if prompt.native is not None and not getattr(prompt.native, "is_fallback", False):
         template.metadata = {"langfuse_prompt": prompt.native}
     return template
-
-
-def _to_fstring(body: str) -> str:
-    """Langfuse mustache -> LangChain f-string, escaping every other brace."""
-    from .prompts import _VARIABLE
-
-    out: list[str] = []
-    last = 0
-    for match in _VARIABLE.finditer(body):
-        out.append(body[last : match.start()].replace("{", "{{").replace("}", "}}"))
-        out.append("{" + match.group(1) + "}")
-        last = match.end()
-    out.append(body[last:].replace("{", "{{").replace("}", "}}"))
-    return "".join(out)
 
 
 def message_text(output: Any) -> str:
@@ -197,7 +188,12 @@ class LLMRunner:
     # -- prompts --------------------------------------------------------------
 
     def get_prompt(self, name: str, *, label: str | None = None, version: int | None = None) -> Prompt:
-        return self.prompts.get(name, label=label if label is not None else self.default_label, version=version)
+        # A pinned version is an exact address: the default label must NOT
+        # ride along (Langfuse rejects label+version together, which would
+        # turn every pinned read into a registry "failure" and silently serve
+        # whatever the fallback holds instead of the pinned version).
+        effective_label = label if label is not None else (self.default_label if version is None else None)
+        return self.prompts.get(name, label=effective_label, version=version)
 
     async def aget_prompt(self, name: str, *, label: str | None = None, version: int | None = None) -> Prompt:
         return await asyncio.to_thread(self.get_prompt, name, label=label, version=version)
