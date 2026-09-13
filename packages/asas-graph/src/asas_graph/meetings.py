@@ -59,7 +59,7 @@ class Meeting:
     """
 
     id: str
-    join_url: str
+    join_url: str | None  # None until Teams finishes provisioning; re-get() to refresh
     subject: str
     start: datetime
     end: datetime
@@ -123,13 +123,17 @@ class TeamsMeetings:
 
         body = body or {}
         join_url = (body.get("onlineMeeting") or {}).get("joinUrl")
-        if not body.get("id") or (online and not join_url):
+        if not body.get("id"):
             raise MeetingCreationError(
-                "Graph event response missing id/onlineMeeting.joinUrl", detail=body
+                "Graph event response missing id", detail=body
             )
+        # A 201 without onlineMeeting.joinUrl is Teams provisioning lag, not a
+        # failure: the invitations are ALREADY SENT, so raising here orphans a
+        # real event (and a retrying host double-invites everyone). Return the
+        # typed Meeting with join_url=None; the link appears on a later get().
         return Meeting(
             id=body["id"],
-            join_url=join_url or "",
+            join_url=join_url or None,
             subject=body.get("subject") or subject,
             start=start_utc,
             end=end_utc,

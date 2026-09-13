@@ -172,3 +172,39 @@ def test_owned_client_uses_the_certifi_context_and_settings_timeout(settings):
     http = client._client()
     assert http.timeout == httpx.Timeout(settings.timeout_seconds)
     asyncio.run(client.aclose())
+
+
+def test_transport_failures_are_typed_and_transient(settings):
+    """Timeouts/DNS/TLS must honor the everything-derives-from-GraphError
+    contract and read as transient for host retry loops."""
+    import httpx
+    from asas_graph.errors import GraphError, GraphTransportError
+
+    class BoomHTTP:
+        is_closed = False
+        async def request(self, *a, **k):
+            raise httpx.ReadTimeout("slow graph")
+
+    client = GraphClient(settings, token_provider=StaticTokenProvider("t"), http=BoomHTTP())
+    with pytest.raises(GraphTransportError) as exc:
+        asyncio.run(client.get("/users/x/events"))
+    assert isinstance(exc.value, GraphError)
+    assert exc.value.is_transient and exc.value.status == 0
+
+
+def test_retry_after_parses_http_date_and_rejects_inf():
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+    from asas_graph.client import _retry_after_seconds
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=90)
+    parsed = _retry_after_seconds(format_datetime(when, usegmt=True))
+    assert parsed is not None and 80 <= parsed <= 91
+    assert _retry_after_seconds("inf") is None
+    assert _retry_after_seconds("120") == 120.0
+
+
+def test_settings_repr_never_prints_the_secret():
+    from asas_graph.settings import GraphSettings
+    s = GraphSettings(tenant_id="t", client_id="c", client_secret="TOP-SECRET")
+    assert "TOP-SECRET" not in repr(s)

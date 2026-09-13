@@ -28,7 +28,7 @@ import certifi
 import httpx
 
 from .auth import ClientCredentialTokenProvider, TokenProvider
-from .errors import GraphError, GraphRequestError
+from .errors import GraphError, GraphRequestError, GraphTransportError
 from .settings import GraphSettings
 
 log = logging.getLogger(__name__)
@@ -79,10 +79,14 @@ class GraphClient:
         return self._http
 
     async def aclose(self) -> None:
-        """Close the underlying HTTP client if this object created it."""
+        """Close the underlying HTTP client if this object created it.
+
+        The closed client stays assigned: a straggler request after shutdown
+        must fail loudly (httpx raises on a closed client) — setting the slot
+        to ``None`` here would silently resurrect a fresh, never-closed pool
+        on the next call and leak it for the process lifetime."""
         if self._owns_http and self._http is not None:
             await self._http.aclose()
-            self._http = None
 
     async def __aenter__(self) -> GraphClient:
         return self
@@ -107,9 +111,16 @@ class GraphClient:
         token = await self._tokens.access_token()
         url = f"{self._settings.base_url}/{path.lstrip('/')}"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-        response = await self._client().request(
-            method, url, json=json, params=params, headers=headers
-        )
+        try:
+            response = await self._client().request(
+                method, url, json=json, params=params, headers=headers
+            )
+        except httpx.HTTPError as exc:
+            # "Everything the library raises derives from GraphError" is the
+            # documented contract — transport failures (timeouts, DNS, TLS,
+            # pool exhaustion) must honor it too, and they are transient by
+            # nature: hosts key retry loops on is_transient.
+            raise GraphTransportError(path, method=method, cause=exc) from exc
         if response.status_code >= 400:
             raise _request_error(method, path, response)
         if response.status_code in _NO_CONTENT or not response.content:
@@ -154,10 +165,24 @@ def _request_error(method: str, path: str, response: httpx.Response) -> GraphReq
 
 
 def _retry_after_seconds(raw: str | None) -> float | None:
-    """Graph sends ``Retry-After`` as a delay in seconds on 429/503."""
+    """``Retry-After`` on 429/503: Graph sends delta-seconds, but the header's
+    other RFC 9110 form is an HTTP-date (front doors and proxies use it), and
+    a host backoff loop keyed on this value must not read a legal header as
+    "no delay". Non-finite values are rejected — a trusting host must never
+    sleep forever on ``inf``."""
     if raw is None:
         return None
     try:
-        return max(0.0, float(raw))
+        value = float(raw)
     except ValueError:
+        from email.utils import parsedate_to_datetime
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        from datetime import datetime, timezone
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    import math
+    if not math.isfinite(value):
         return None
+    return max(0.0, value)

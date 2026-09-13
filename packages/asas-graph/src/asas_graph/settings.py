@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from .errors import GraphConfigError
 
@@ -33,7 +34,12 @@ class GraphSettings:
 
     tenant_id: str
     client_id: str
-    client_secret: str
+    client_secret: str = field(repr=False)
+    #: TLS/proxy knobs for the TOKEN plane (MSAL's own HTTP). The data plane
+    #: takes a custom httpx client via GraphClient(http=...); these keep the
+    #: private-CA / corporate-proxy story true for both planes.
+    verify: Any | None = None      # bool or CA-bundle path, per requests
+    proxies: dict[str, str] | None = None
     authority_host: str = DEFAULT_AUTHORITY_HOST
     base_url: str = DEFAULT_BASE_URL
     scopes: tuple[str, ...] = field(default=DEFAULT_SCOPES)

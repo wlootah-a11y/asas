@@ -81,14 +81,17 @@ def test_create_without_online_omits_the_teams_flags_and_tolerates_no_join_url(m
     payload = graph.only.json
     assert "isOnlineMeeting" not in payload and "onlineMeetingProvider" not in payload
     assert "attendees" not in payload and "body" not in payload
-    assert meeting.join_url == "" and meeting.id == "evt-2"
+    assert meeting.join_url is None and meeting.id == "evt-2"
 
 
-def test_create_online_without_a_join_url_is_a_creation_error(meetings, graph):
+def test_create_online_without_a_join_url_returns_the_meeting_not_an_orphan(meetings, graph):
+    """A 201 without onlineMeeting.joinUrl is Teams provisioning lag, not a
+    failure: the invitations are already sent, so raising would orphan a real
+    event and a retrying host would double-invite everyone. The typed Meeting
+    comes back with join_url=None; the link appears on a later get()."""
     graph.status, graph.body = 201, {"id": "evt-3"}
-    with pytest.raises(MeetingCreationError, match="joinUrl") as exc:
-        asyncio.run(meetings.create("x", START, END))
-    assert exc.value.detail == {"id": "evt-3"}
+    meeting = asyncio.run(meetings.create("x", START, END))
+    assert meeting.id == "evt-3" and meeting.join_url is None
 
 
 def test_create_maps_a_graph_failure_and_chains_the_cause(meetings, graph):

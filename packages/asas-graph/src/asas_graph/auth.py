@@ -16,6 +16,7 @@ only then does a network round-trip happen.
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -57,11 +58,16 @@ class ClientCredentialTokenProvider:
         self._settings = settings
         self._app_factory = app_factory or _msal_app
         self._app: Any | None = None
+        self._app_lock = threading.Lock()
 
     def _application(self) -> Any:
-        if self._app is None:
-            self._app = self._app_factory(self._settings)
-        return self._app
+        # Guarded: access_token() runs in to_thread workers, so concurrent
+        # first calls would each pay OIDC discovery + a client-credentials
+        # round trip building N apps where one suffices.
+        with self._app_lock:
+            if self._app is None:
+                self._app = self._app_factory(self._settings)
+            return self._app
 
     def _acquire(self) -> dict[str, Any]:
         app = self._application()
@@ -73,7 +79,14 @@ class ClientCredentialTokenProvider:
 
     async def access_token(self) -> str:
         # MSAL is synchronous and does its own HTTP; keep it off the event loop.
-        result = await asyncio.to_thread(self._acquire)
+        try:
+            result = await asyncio.to_thread(self._acquire)
+        except Exception as exc:  # noqa: BLE001 - requests-level SSL/proxy/DNS
+            # failures inside MSAL must honor the everything-derives-from-
+            # GraphError contract instead of escaping as raw requests errors.
+            raise GraphAuthError(
+                f"token acquisition failed: {type(exc).__name__}: {exc}"
+            ) from exc
         token = result.get("access_token")
         if not token:
             raise GraphAuthError(
@@ -86,8 +99,17 @@ class ClientCredentialTokenProvider:
 def _msal_app(settings: GraphSettings) -> Any:
     import msal  # imported here so a fake provider never needs the real library
 
+    kwargs: dict[str, Any] = {}
+    # The README's private-CA/proxy story must cover BOTH planes: the data
+    # plane takes a custom httpx client, and without these the token plane
+    # would still fail with a raw SSL error inside MSAL's own session.
+    if settings.verify is not None:
+        kwargs["verify"] = settings.verify
+    if settings.proxies is not None:
+        kwargs["proxies"] = settings.proxies
     return msal.ConfidentialClientApplication(
         client_id=settings.client_id,
         authority=settings.authority,
         client_credential=settings.client_secret,
+        **kwargs,
     )

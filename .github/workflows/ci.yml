@@ -40,6 +40,11 @@ jobs:
       fail-fast: false
       matrix:
         package: [asas-lookups, asas-validation, asas-storage, asas-ratelimit, asas-jobs, asas-access, asas-workflow, asas-notifications, asas-search, asas-mcp, asas-graph]
+        # asas-graph touches no database (same rule as asas-cli): one leg,
+        # not an identical suite twice plus an unused postgres service.
+        exclude:
+          - package: asas-graph
+            engine: postgres
         engine: [sqlite, postgres]
 
     services:

@@ -93,6 +93,22 @@ class GraphRequestError(GraphError):
         return self.status in _TRANSIENT_STATUSES
 
 
+class GraphTransportError(GraphRequestError):
+    """The request never got a Graph answer: timeout, DNS, TLS, pool
+    exhaustion. Status is 0 (there was no response), and it is transient by
+    definition — the retry loop a host keys on ``is_transient`` applies."""
+
+    def __init__(self, path: str, *, method: str = "", cause: Exception | None = None) -> None:
+        super().__init__(0, path, detail=None, method=method)
+        self.cause = cause
+        reason = f"{type(cause).__name__}: {cause}" if cause is not None else "transport failure"
+        self.args = (f"no response for {method + ' ' if method else ''}{path} ({reason})",)
+
+    @property
+    def is_transient(self) -> bool:
+        return True
+
+
 class MeetingError(GraphError):
     """A Teams-meeting operation failed. See the three subclasses."""
 
