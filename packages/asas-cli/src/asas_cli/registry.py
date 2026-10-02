@@ -105,6 +105,15 @@ _SPECS = [
         "Remote MCP server core (exposes the host to AI clients over MCP).",
         "protocol-only",
     ),
+    PackageSpec(
+        "tenancy",
+        "asas-tenancy",
+        "asas_tenancy",
+        "packages/asas-tenancy",
+        "Tenant isolation enforced by Postgres RLS: context, session GUC, "
+        "migration helpers, conformance kit.",
+        "table-less, router-less, chain-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

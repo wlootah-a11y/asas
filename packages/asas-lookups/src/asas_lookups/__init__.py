@@ -33,7 +33,7 @@ from .seeding import (  # noqa: F401
 )
 from .service import configure_org_resolver, find_org_shadows
 
-__version__ = "0.13.2"
+__version__ = "0.13.3"
 
 __all__ = [
     "Inspector",

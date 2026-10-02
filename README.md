@@ -84,6 +84,7 @@ Every Asas package holds to the same twelve principles, in no particular order:
 | `asas-notifications` | `asas_notifications` | table-owning + router |
 | `asas-search` | `asas_search` | dialect-branched chain (PG deep tier) |
 | `asas-mcp` | `asas_mcp` | protocol-only |
+| `asas-tenancy` | `asas_tenancy` | table-less, router-less, chain-less (host RLS helpers) |
 | `asas-cli` | `asas_cli` | tooling |
 
 Packages version independently; the current version of each lives in its
