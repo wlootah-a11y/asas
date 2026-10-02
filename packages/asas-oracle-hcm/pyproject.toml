@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "asas-lookups"
-version = "0.13.3"
-description = "Asas reference-data / lookups module: generic bilingual lookup types, values, translations and aliases with a FastAPI read + admin API."
+name = "asas-oracle-hcm"
+version = "0.1.0"
+description = "Asas Oracle Fusion HCM module: an async REST client for Oracle Fusion with typed errors, the query grammar's traps written down, a pluggable read cache, and id-to-name lookups (grades, departments, business units, jobs, positions, people) that respect what the instance will actually answer."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -13,24 +13,23 @@ license-files = ["LICENSE", "NOTICE"]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Framework :: FastAPI",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
 ]
 dependencies = [
-    "fastapi>=0.110,<1",
-    "sqlmodel>=0.0.16,<0.0.45",
-    "alembic>=1.13",
+    "httpx>=0.27,<1",
 ]
+
+[project.scripts]
+asas-oracle-check = "asas_oracle_hcm.check:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
-    "psycopg2-binary>=2.9",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/asas_lookups"]
+packages = ["src/asas_oracle_hcm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

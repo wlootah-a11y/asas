@@ -105,6 +105,14 @@ _SPECS = [
         "Remote MCP server core (exposes the host to AI clients over MCP).",
         "protocol-only",
     ),
+    PackageSpec(
+        "oracle-hcm",
+        "asas-oracle-hcm",
+        "asas_oracle_hcm",
+        "packages/asas-oracle-hcm",
+        "Async Oracle Fusion HCM REST client: typed errors, q-grammar helpers, cached id-to-name and people lookups.",
+        "table-less, router-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}
