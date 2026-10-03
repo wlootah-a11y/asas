@@ -122,13 +122,13 @@ def _sla_sweep(session: Session, payload: dict | None = None, **_kwargs) -> None
             session,
             [ticket.assignee_id],
             ACTION_SLA_BREACHED,
-            # The four axes travel on the emit (DR 0003) — there is no kind
+            # The two axes travel on the emit (DR 0003) — there is no kind
             # catalog to default them from. Routing attaches to these, never to
             # the action string above.
             topic=TOPIC_TICKETS,
-            nature=notifications.Nature.warning,
-            urgency=notifications.Urgency.high,
-            reason=notifications.Reason.watching,
+            # The one quiet action: a breach notice is a standing fact the sweep
+            # re-announces, so it belongs in the feed and not in somebody's mail.
+            importance=notifications.Importance.low,
             title=f"Ticket #{ticket.id} is past its due date",
             entity_type="ticket",
             entity_id=ticket.id,

@@ -10,13 +10,12 @@ cross-org id probe 404s exactly like a missing row. Without a resolver (or
 outside a request) queries scope on ``user_id`` alone, as before 0.15.
 """
 
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from . import service
-from .models import Nature
 from .schemas import (
     ArchiveResult,
     NotificationList,
@@ -25,7 +24,7 @@ from .schemas import (
 )
 
 
-def _require_recipient(session: Session) -> int:
+def _require_recipient(session: Session) -> str:
     user_id = service.current_user_id(session)
     if user_id is None:
         # An anonymous run (host enforcement off) has no "me" to have a feed.
@@ -46,19 +45,15 @@ def build_router(get_session) -> APIRouter:
             "open", description="open = still in the inbox; archived = filed away"
         ),
         unread_only: bool = False,
-        nature: Optional[Nature] = Query(
-            None, description="action | info | warning — composes with state"
-        ),
-        category: Optional[Nature] = Query(
-            None,
-            deprecated=True,
-            description="DEPRECATED alias for nature= (0.15 name; one release)",
-        ),
         session: Session = Depends(get_session),
     ):
-        """The filters compose, and each one is independent: a host can ask for
-        open + action (Teamy's "needs action"), unread + action, archived + action,
-        and so on. `total` follows the filters; `unread_count` never does.
+        """The two state filters compose and are independent: a host can ask for
+        open, unread, archived, or any pair. `total` follows the filters;
+        `unread_count` never does.
+
+        There is no presentation filter: ``nature`` left the package in 0.18.0,
+        so a host that keeps that axis on its own sidecar narrows on it in its
+        own query (see :func:`service.list_feed`).
 
         Pagination happens in SQL via :func:`service.list_feed` — the feed used
         to fetch every matching row and slice in Python — and queries are
@@ -70,7 +65,6 @@ def build_router(get_session) -> APIRouter:
             user_id,
             state=state,
             unread_only=unread_only,
-            nature=nature if nature is not None else category,
             page=page,
             page_size=page_size,
         )

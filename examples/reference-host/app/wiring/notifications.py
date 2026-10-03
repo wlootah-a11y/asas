@@ -31,10 +31,10 @@ from ..models import DEFAULT_ORG_ID, Agent, Ticket
 # below, because routing policy and (later) preferences key on them — an emit
 # into an unseeded topic fails loud. Everything else travels on the emit
 # itself (DR 0003): the *action* is the app's own `entity.verb` reference,
-# declared nowhere, and the nature/urgency/reason axes are stated at the call
+# declared nowhere, and the second routing axis, `importance` (`low` stays in
+# the feed, `high` also emails, absent a policy row), is stated at the call
 # site — see the `notify()` calls in `jobs.py` and `workflow.py`.
 TOPIC_TICKETS = "tickets"
-
 
 def _context_resolver(session: Session) -> Optional[tuple[int, int]]:
     """``(user_id, org_id)`` — the package's order, and the order matters.

@@ -72,7 +72,7 @@ def test_rejects_a_foreign_table_of_the_same_name(engine):
         conn.execute(
             sa.text(
                 "CREATE TABLE notification ("
-                "  id INTEGER PRIMARY KEY, candidate_id INTEGER, headline VARCHAR"
+                "  id INTEGER PRIMARY KEY, record_id INTEGER, headline VARCHAR"
                 ")"
             )
         )
@@ -208,7 +208,14 @@ def test_migration_0004_renames_in_place_and_seeds_general(engine):
     """0004 renames kind→action and category→nature with data surviving in
     place, adds the axis columns, creates the config tables, and seeds the
     `general` platform topic the ad hoc path and the register_kind shim rely
-    on."""
+    on.
+
+    Upgraded to 0004 EXACTLY, not to head: this test is about what one revision
+    does to a row that was already there, and later revisions move the same
+    columns again (``0009`` renames ``urgency`` and drops ``nature``). Running
+    to head made the assertions describe the chain's current end state, which is
+    a different question and belongs to whichever revision changes it.
+    """
     command.upgrade(_config(engine), "0003")
     with engine.begin() as conn:
         conn.execute(
@@ -220,7 +227,7 @@ def test_migration_0004_renames_in_place_and_seeds_general(engine):
             )
         )
 
-    asas_notifications.migrate(engine)
+    command.upgrade(_config(engine), "0004")
 
     inspector = sa.inspect(engine)
     cols = {c["name"] for c in inspector.get_columns("notification")}
@@ -283,10 +290,87 @@ def test_downgrade_0004_backfills_null_actions(engine):
         conn.execute(
             sa.text(
                 "INSERT INTO notification "
-                "(org_id, user_id, action, nature, urgency, reason, title, created_at) "
-                "VALUES (1, 1, NULL, 'info', 'low', 'participant', 'ad hoc', '2026-01-01')"
+                "(org_id, user_id, action, importance, title, created_at) "
+                "VALUES (1, 1, NULL, 'low', 'ad hoc', '2026-01-01')"
             )
         )
+    # Through 0009's downgrade on the way, which restores ``nature`` as NOT NULL
+    # with a default: a downgrade that stopped at a column it could not fill
+    # would leave the chain half-reverted.
     command.downgrade(_config(engine), "0003")
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT kind FROM notification")).scalar() == "ad_hoc"
+
+
+def test_migration_0009_folds_rows_up_and_deletes_the_retired_cells(engine):
+    """The retired rung is folded on the feed and DELETED in the policy table.
+
+    The asymmetry is the point. A notification stamped ``normal`` DID email
+    somebody (the built-in fallback was ``urgency is not low``), so reading it
+    back as ``high`` is what happened to it. A policy CELL naming that rung
+    decides nothing instead, and folding it would silently widen a rule an
+    administrator wrote for one value, so it goes and the operator re-states it.
+    """
+    command.upgrade(_config(engine), "0008")
+    with engine.begin() as conn:
+        for urgency in ("low", "normal", "high"):
+            conn.execute(
+                sa.text(
+                    "INSERT INTO notification "
+                    "(org_id, user_id, action, topic, nature, urgency, title, created_at) "
+                    "VALUES ('1', '1', 'job.publish', 'general', 'action', :u, :u, "
+                    "'2026-01-01')"
+                ),
+                {"u": urgency},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO notification_channel_policy "
+                    "(topic, urgency, channel, enabled, mandatory, created_at, updated_at) "
+                    "VALUES ('general', :u, 'email', true, false, "
+                    "'2026-01-01', '2026-01-01')"
+                ),
+                {"u": urgency},
+            )
+
+    asas_notifications.migrate(engine)
+
+    cols = {c["name"] for c in sa.inspect(engine).get_columns("notification")}
+    assert "importance" in cols
+    assert "urgency" not in cols and "nature" not in cols
+    with engine.connect() as conn:
+        # title still carries what the row was stamped with, so the fold is
+        # visible rather than inferred: the 'normal' row now reads 'high'.
+        rows = dict(
+            conn.execute(sa.text("SELECT title, importance FROM notification")).all()
+        )
+        assert rows == {"low": "low", "normal": "high", "high": "high"}
+        cells = conn.execute(
+            sa.text("SELECT importance FROM notification_channel_policy ORDER BY 1")
+        ).scalars().all()
+        assert cells == ["high", "low"]  # the retired cell is gone, not folded
+
+
+def test_downgrade_0009_restores_nature_as_a_default(engine):
+    """Both directions run, and the downgrade says what it cannot restore.
+
+    ``nature`` comes back NOT NULL with every row reading ``info``: a default,
+    never a recovery, because this package no longer holds those values. The
+    fold is not reversible either, which is why nothing here asserts that a
+    ``high`` row remembers having been ``normal``.
+    """
+    asas_notifications.migrate(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO notification "
+                "(org_id, user_id, action, topic, importance, title, created_at) "
+                "VALUES ('1', '1', 'job.publish', 'general', 'high', 't', '2026-01-01')"
+            )
+        )
+    command.downgrade(_config(engine), "0008")
+    cols = {c["name"] for c in sa.inspect(engine).get_columns("notification")}
+    assert "urgency" in cols and "nature" in cols and "importance" not in cols
+    with engine.connect() as conn:
+        row = conn.execute(sa.text("SELECT nature, urgency FROM notification")).one()
+    assert (row.nature, row.urgency) == ("info", "high")

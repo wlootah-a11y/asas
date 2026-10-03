@@ -37,8 +37,6 @@ _SENTINEL_COLUMNS = frozenset({
     "id",
     "org_id",
     "user_id",
-    "urgency",
-    "reason",
     "entity_type",
     "entity_id",
     "title",
@@ -62,7 +60,7 @@ _SENTINEL_COLUMNS = frozenset({
 # Empty for a package whose baseline column names have never moved.
 _RENAMED_PAIRS: tuple[tuple[str, str], ...] = (
     ("kind", "action"),
-    ("category", "nature"),
+    ("urgency", "importance"),
 )
 
 

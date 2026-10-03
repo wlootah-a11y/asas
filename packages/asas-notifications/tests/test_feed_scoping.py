@@ -99,6 +99,6 @@ def test_service_calls_without_context_are_unscoped(session, kind):
     service.configure_context_resolver(None)
     assert service.unread_count(session, 1) == 1
     rows, total = service.list_feed(session, 1)
-    assert total == 1 and [n.user_id for n in rows] == [1]
+    assert total == 1 and [n.user_id for n in rows] == ["1"]
     assert service.mark_all_read(session, 1) == 1
     assert service.archive_read(session, 1) == 1

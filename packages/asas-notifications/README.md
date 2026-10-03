@@ -3,9 +3,12 @@
 A generic notification engine (DR 0003): producers call `notify` inside their
 own transaction — the insert IS the enqueue, so a notification exists iff the
 domain change committed — passing the **application action** that caused the
-emit (`action="job.publish"`, a reference declared nowhere) and four
-classification **axes** (topic × nature × urgency × reason). Behavior attaches
-to the axes, never to individual actions; the DB stores only deviations.
+emit (`action="job.publish"`, a reference declared nowhere) and the two
+classification **axes** that decide a channel (topic × importance). Behavior
+attaches to the axes, never to individual actions; the DB stores only
+deviations. DR 0003 had four: `reason` (why this recipient) went in 0.17.0 with
+the preference layer it was reserved for, and `nature` (what it asks of you)
+went in 0.18.0 because it was presentation and the host renders its own feed.
 The in-app feed is the `notification` row itself (`build_router` serves it);
 external channels go through the `notification_delivery` outbox and registered
 **channel adapters** (email, chat, …).
@@ -17,7 +20,7 @@ Engine rules baked in (from Teamy's WXL-209 epic):
   so a notification never leaks a private record.
 - **Data-driven routing** — per channel, most specific wins: topic policy row →
   axis policy row → the built-in fallback (`low` is in-app only — ambient
-  activity never emails; `normal`/`high` add email). Empty policy tables
+  activity never emails; `high` adds email). Empty policy tables
   reproduce the fallback exactly. Unread ambient rows can **coalesce** per
   (org, recipient, action, entity) so an edit burst stays one bell entry.
 - **Duplicate-safe dispatch** — each outbox row is claimed with a rows-affected
@@ -70,8 +73,8 @@ app.include_router(notifications.build_router(get_session),
 
 # producers (inside their own transaction)
 notifications.notify(session, recipient_user_ids, "workflow.request_approval",
-                     topic="approvals", nature="action", urgency="normal",
-                     reason="participant", title="Budget change",
+                     topic="approvals", importance="high",
+                     title="Budget change",
                      record=project, entity_type="project",
                      entity_id=project.id, actor_user_id=actor.id)
 
@@ -94,13 +97,11 @@ read and to leave only when the recipient acts on it or files it away — an
 | --- | --- | --- |
 | `state` | `open` (un-archived) · `archived` · `all` | `open` |
 | `unread_only` | bool | `false` |
-| `nature` | `action` · `info` · `warning` | all |
 
-(`category` is accepted as a deprecated alias for `nature` for one release.)
-
-So `?state=open&nature=action` is "still needs me", `?state=archived` is the
-history, and `?unread_only=true` is the classic feed. `total` reflects the
-filters; **`unread_count` never does** — it is unread-and-un-archived on every
+There is no presentation filter: `nature` left the package in 0.18.0, and a host
+that wants one keeps it on a row of its own. `?state=open&unread_only=true` is
+"still needs me", `?state=archived` is the history, and `?unread_only=true` is
+the classic feed. `total` reflects the filters; **`unread_count` never does** — it is unread-and-un-archived on every
 response, so a badge fed from any list call agrees with every other.
 
 Writes: `POST /{id}/read`, `/read-all`, `/{id}/archive`, `/{id}/unarchive`, and

@@ -141,9 +141,7 @@ def _on_complete(session: Session, instance, outcome: str) -> None:
             [instance.initiated_by],
             ACTION_ESCALATION_DECIDED,
             topic=TOPIC_TICKETS,
-            nature=notifications.Nature.info,
-            urgency=notifications.Urgency.normal,
-            reason=notifications.Reason.participant,
+            importance=notifications.Importance.high,
             title=(
                 f"Escalation of ticket #{ticket.id} was "
                 f"{'approved' if approved else 'declined'}"
@@ -189,9 +187,7 @@ def request_escalation(session: Session, ticket: Ticket, requester: Agent):
             approvers,
             ACTION_ESCALATION_REQUESTED,
             topic=TOPIC_TICKETS,
-            nature=notifications.Nature.action,
-            urgency=notifications.Urgency.high,
-            reason=notifications.Reason.requested,
+            importance=notifications.Importance.high,
             title=f"Escalation requested for ticket #{ticket.id}",
             actor_user_id=requester.id,
             entity_type="ticket",

@@ -8,7 +8,6 @@ from sqlmodel import SQLModel
 
 from typing import Any
 
-from .models import Nature, Reason, Urgency
 
 
 class NotificationRead(SQLModel):
@@ -17,11 +16,15 @@ class NotificationRead(SQLModel):
     #: emits and for rows predating 0.16 that were never re-labeled.
     action: Optional[str] = None
     topic: Optional[str] = None
-    nature: Nature
-    urgency: Urgency
-    reason: Reason
+    #: The routing axis, as a catalogue KEY. A plain string since 0.19.0: the
+    #: rungs are rows in ``notification_importance``, so typing this as the
+    #: seeded enum would make a read of an org's own rung fail validation on the
+    #: way out, which is a 500 on a feed that stored the value happily.
+    #: ``nature`` sat beside it until 0.18.0 and is the host's now: it drove
+    #: presentation, and a host that renders its own feed decides how.
+    importance: str
     entity_type: Optional[str] = None
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     title: str
     body: Optional[str] = None
     link: Optional[str] = None

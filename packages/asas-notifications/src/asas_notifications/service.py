@@ -1,15 +1,16 @@
 """Emitter seam + routing policy + dispatcher (WXL-222; DR 0003).
 
 - Producers call ``notify`` inside their own transaction — the insert IS the
-  enqueue — passing the **application action** that caused the emit and the
-  four axes (topic/nature/urgency/reason). No registration: the action is a
-  reference, not a declaration; ``register_kind`` survives one release as a
-  deprecating shim (DR 0003 I-3).
+  enqueue — passing the **application action** that caused the emit and the two
+  axes (topic/importance). No registration: the action is a reference, not a
+  declaration; ``register_kind`` survives one release as a deprecating shim
+  (DR 0003 I-3).
 - Routing resolves per channel, most specific wins: topic policy row → axis
-  policy row → the built-in fallback, which is exactly the pre-0.16 rule —
-  ``low`` is in-app only (ambient activity never emails you — the epic's KPI),
-  ``normal``/``high`` add an email delivery row. Empty policy tables therefore
-  reproduce 0.15 behavior bit-for-bit (the DR's equivalence guarantee).
+  policy row → the built-in fallback, which is the pre-0.16 rule minus the rung
+  that never mattered — ``low`` is in-app only (ambient activity never emails
+  you — the epic's KPI), ``high`` adds an email delivery row. Empty policy
+  tables therefore reproduce 0.15 behavior for both surviving rungs (the DR's
+  equivalence guarantee).
   ``in_app`` is the notification row itself; a policy that disables it for an
   emit suppresses the whole insert (no row, no anchor for deliveries).
 - The dispatcher is queue-shaped but v1-simple: an after-commit hook plus a
@@ -36,15 +37,14 @@ from sqlmodel import Session, select
 
 from .channels import DeliveryPayload, SkipDelivery, adapter_for
 from .models import (
-    Category,
+    RETIRED_URGENCY,
     DeliveryStatus,
-    Nature,
+    Importance,
     Notification,
     NotificationChannelPolicy,
     NotificationDelivery,
+    NotificationImportance,
     NotificationTopic,
-    Reason,
-    Urgency,
 )
 
 log = logging.getLogger(__name__)
@@ -63,11 +63,26 @@ IN_APP = "in_app"
 DEFAULT_TOPIC = "general"
 
 
+def importance_from_legacy_urgency(value: Any) -> Importance:
+    """One of the two surviving rungs from a pre-0.18.0 ``urgency`` value.
+
+    The retired middle rung folds **UP**, because the built-in fallback it was
+    routed by was ``urgency is not Urgency.low``: a ``normal`` notification
+    emailed somebody, so reading it as ``high`` is what actually happened to it,
+    and reading it as ``low`` would claim it had stayed in the feed. The same
+    fold is what migration ``0009`` applies to stored rows, and it is deliberately
+    NOT applied to policy cells, which the migration deletes instead: a rule an
+    administrator wrote for one rung must not quietly start matching another.
+    """
+    raw = getattr(value, "value", value)
+    if raw == RETIRED_URGENCY:
+        return Importance.high
+    return Importance(raw)
+
+
 @dataclass(frozen=True)
 class KindSpec:
-    category: Nature  # field name kept for one release — hosts introspect it
-    urgency: Urgency
-    reason: Reason
+    importance: Importance
     topic: str = DEFAULT_TOPIC
 
 
@@ -77,23 +92,32 @@ _KINDS: dict[str, KindSpec] = {}
 def register_kind(
     kind: str,
     *,
-    category: Nature,
-    urgency: Urgency,
-    reason: Reason,
+    urgency: Any,
+    # Accepted and ignored, both of them. ``reason`` is no longer stored;
+    # ``category`` (the presentation axis, ``nature`` from 0.16) left the
+    # package in 0.18.0 and there is nowhere to put it. A 0.15 wiring passes
+    # both, and this shim's whole job is that such a wiring keeps working for
+    # its last release — so the signature is FROZEN in the 0.15 vocabulary
+    # rather than being renamed halfway. New call sites pass the axes on
+    # :func:`notify` and never come here.
+    category: Any = None,
+    reason: Any = None,
     topic: str = DEFAULT_TOPIC,
 ) -> None:
     """DEPRECATED (DR 0003): the kind catalog is gone — pass the action and the
-    four axes on :func:`notify` instead. This shim keeps a 0.15 wiring working
+    two axes on :func:`notify` instead. This shim keeps a 0.15 wiring working
     for one release: a registered kind supplies axis defaults when ``notify``
     is called with its name and no axes; ``topic`` defaults to the seeded
-    ``general`` topic so a legacy emit always passes topic validation."""
+    ``general`` topic so a legacy emit always passes topic validation. The
+    registered ``urgency`` becomes the emit's ``importance``, with the retired
+    middle rung folded up (:func:`importance_from_legacy_urgency`)."""
     warnings.warn(
-        "register_kind() is deprecated: pass action= and the four axes "
-        "(topic/nature/urgency/reason) on notify() instead (DR 0003)",
+        "register_kind() is deprecated: pass action= and the two axes "
+        "(topic/importance) on notify() instead (DR 0003)",
         DeprecationWarning,
         stacklevel=2,
     )
-    _KINDS[kind] = KindSpec(Nature(category), Urgency(urgency), Reason(reason), topic)
+    _KINDS[kind] = KindSpec(importance_from_legacy_urgency(urgency), topic)
 
 
 def registered_kinds() -> dict[str, KindSpec]:
@@ -103,10 +127,14 @@ def registered_kinds() -> dict[str, KindSpec]:
 # ── app seams (wired in notifications_wiring.py) ─────────────────────────────
 
 # (session) -> (user_id, org_id) of the current request, or None outside one.
-_context_resolver: Optional[Callable[[Session], Optional[tuple[int, int]]]] = None
+_context_resolver: Optional[Callable[[Session], Optional[tuple[Any, Any]]]] = None
 # (session, user_ids, entity_type, entity_id, record) -> user_ids allowed to
 # know the subject exists. `record` is None when the producer did not have the
 # row; the id is always passed so the filter can resolve it itself.
+#: (session, user_id) -> BCP-47 tag, or None. Consulted once per recipient at
+#: emit; see configure_locale_resolver.
+_locale_resolver: Optional[Callable[[Session, Any], Optional[str]]] = None
+
 _recipient_filter: Optional[
     Callable[[Session, Sequence[int], str, Optional[int], Any], Sequence[int]]
 ] = None
@@ -121,6 +149,35 @@ def configure_context_resolver(
     or None``."""
     global _context_resolver
     _context_resolver = fn
+
+
+def configure_locale_resolver(
+    fn: Optional[Callable[[Session, Any], Optional[str]]]
+) -> None:
+    """``(session, user_id) -> language tag``, called per recipient at emit.
+
+    **Why at emit and not at dispatch.** The dispatcher runs on raw connections
+    outside any request: ``current_user_id`` and ``current_org_id`` return
+    ``None`` there by contract, so a renderer between the outbox and an adapter
+    has nobody to ask what language a recipient reads. A notification emitted
+    today and mailed by tomorrow's sweep would render in the deployment default,
+    which for a reader of the other language is simply the wrong email. So the
+    answer is recorded when the fact happens.
+
+    Optional, and a no-op when unconfigured: ``locale`` stays ``NULL`` and an
+    adapter reads that as "deployment default", which is what every host does
+    today. Nothing changes for a single-language deployment.
+
+    **Returning ``None`` for a recipient is fine** and means the same thing. A
+    subject with no account row, or one that has expressed no preference, is not
+    an error; it is a recipient the host has nothing to say about.
+
+    The host is handed its own ``user_id`` value, not the stored form, for the
+    same reason the recipient filter is: this seam is the host's own lookup, and
+    it should not have to know how the package stores an id.
+    """
+    global _locale_resolver
+    _locale_resolver = fn
 
 
 def configure_recipient_filter(
@@ -145,12 +202,12 @@ def configure_recipient_filter(
     _recipient_filter = fn
 
 
-def current_user_id(session: Session) -> Optional[int]:
+def current_user_id(session: Session) -> Optional[Any]:
     ctx = _context_resolver(session) if _context_resolver else None
     return ctx[0] if ctx else None
 
 
-def current_org_id(session: Session) -> Optional[int]:
+def current_org_id(session: Session) -> Optional[Any]:
     """The request's org, when a context resolver is configured and inside a
     request. Feed/read/archive queries constrain on it *in addition to*
     ``user_id`` — defense in depth for multi-tenant hosts: host-level tenancy
@@ -161,14 +218,35 @@ def current_org_id(session: Session) -> Optional[int]:
     return ctx[1] if ctx else None
 
 
-def _recipient_conditions(session: Session, user_id: int) -> list:
+def normalize_id(value: Any) -> Optional[str]:
+    """A host identity value as the package stores it, or ``None``.
+
+    The one place a host's id becomes the package's storage form. Nothing here
+    parses these values: they are grouped, filtered and compared, all of which
+    text does, so the columns are VARCHAR and this is the only coercion.
+
+    An int host passes ints and reads back their decimal string; a UUID host
+    passes its own keys and reads them back unchanged. ``None`` stays ``None``,
+    because an absent entity id is absent rather than the string "None".
+
+    Applied at the STORAGE boundary and deliberately nowhere else. The
+    visibility filter and the context resolver are handed the host's own values,
+    not these: a filter written against ints that silently stops dropping
+    anyone is a leak, and that is the one failure the seam exists to prevent.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
+def _recipient_conditions(session: Session, user_id: Any) -> list:
     """THE tenancy chokepoint: every recipient-facing query builds its WHERE
     from this list, so the org guard cannot be forgotten at one site. Keep new
     feed/count/bulk queries on it."""
-    conditions = [Notification.user_id == user_id]
+    conditions = [Notification.user_id == normalize_id(user_id)]
     org_id = current_org_id(session)
     if org_id is not None:
-        conditions.append(Notification.org_id == org_id)
+        conditions.append(Notification.org_id == normalize_id(org_id))
     return conditions
 
 
@@ -180,12 +258,18 @@ def _recipient_conditions(session: Session, user_id: int) -> list:
 CONFIG_TTL_SECONDS = 60
 _topic_cache: dict[str, tuple[datetime, frozenset]] = {}
 _policy_cache: dict[Optional[int], tuple[datetime, tuple]] = {}
+#: The importance catalogue, cached whole and keyed by nothing: it is small
+#: (single digits of rows per org) and both readers want the same set, so one
+#: entry beats an org-keyed cache that would miss on the platform rows.
+_importance_cache: dict[str, tuple[datetime, tuple]] = {}
 
 
 def config_cache_clear() -> None:
-    """Drop the cached topic/policy config (tests; admin APIs after a write)."""
+    """Drop the cached topic/importance/policy config (tests; admin APIs after
+    a write)."""
     _topic_cache.clear()
     _policy_cache.clear()
+    _importance_cache.clear()
 
 
 def _fresh(entry) -> bool:
@@ -220,25 +304,99 @@ def _topic_known(session: Session, topic: str) -> bool:
 
 
 @dataclass(frozen=True)
+class _ImportanceRow:  # a detached, cache-safe copy of NotificationImportance
+    org_id: Optional[str]
+    key: str
+    emails_by_default: bool
+
+
+def _importance_rows(session: Session, *, refresh: bool = False) -> tuple:
+    entry = None if refresh else _importance_cache.get("all")
+    if not _fresh(entry):
+        rows = session.exec(
+            select(
+                NotificationImportance.org_id,
+                NotificationImportance.key,
+                NotificationImportance.emails_by_default,
+            )
+        ).all()
+        entry = (
+            datetime.utcnow(),
+            tuple(
+                _ImportanceRow(org_id=r[0], key=r[1], emails_by_default=bool(r[2]))
+                for r in rows
+            ),
+        )
+        _importance_cache["all"] = entry
+    return entry[1]
+
+
+def _importance_known(session: Session, importance: str) -> bool:
+    """Membership with a fresh re-query on miss, exactly like
+    :func:`_topic_known`: a rung an administrator added on another replica
+    inside the TTL window must cost one extra SELECT, never a false LookupError
+    that aborts the producer's transaction.
+
+    Org-agnostic, for the topic catalogue's reason: this call is catching
+    typos and unseeded values, and a key that exists for any org is neither.
+    Which rung applies to WHICH org is policy resolution's business, and that
+    falls back rather than failing."""
+    if any(r.key == importance for r in _importance_rows(session)):
+        return True
+    return any(r.key == importance for r in _importance_rows(session, refresh=True))
+
+
+def _emails_by_default(session: Session, org: Optional[Any], importance: str) -> bool:
+    """The built-in fallback for external channels at this rung.
+
+    Reads the catalogue rather than comparing against ``Importance.low``, which
+    is what the fallback did until 0.19.0 and what made two rungs the only two
+    rungs. An org override row beats the platform row; a rung with no row at all
+    (a value that predates the catalogue, or one deleted out from under stored
+    rows) is treated as QUIET, because the direction that under-delivers is the
+    one to fail in: a notification nobody emailed is still in the recipient's
+    feed, and mail sent on a guess cannot be recalled."""
+    rows = [r for r in _importance_rows(session) if r.key == importance]
+    if not rows:
+        return False
+    org_value = normalize_id(org) if org is not None else None
+    override = next(
+        (r for r in rows if r.org_id is not None and r.org_id == org_value), None
+    )
+    if override is not None:
+        return override.emails_by_default
+    # The PLATFORM row explicitly, never "the first row that came back". The
+    # catalogue is cached whole and unscoped (one small table, both readers want
+    # the same set), so another org's override for this key is sitting in that
+    # list too and row order is whatever the SELECT happened to return. Taking
+    # the first would let one org's routing default decide another's, which is
+    # the one class of bug this package cannot ship.
+    platform = next((r for r in rows if r.org_id is None), None)
+    return platform.emails_by_default if platform is not None else False
+
+
+@dataclass(frozen=True)
 class _PolicyRow:  # a detached, cache-safe copy of NotificationChannelPolicy
     id: int
-    org_id: Optional[int]
+    #: The host's own org id in storage form, not an int: this is a copy of a
+    #: column that is VARCHAR now. Annotating it ``int`` described a shape this
+    #: has not held since identity became opaque.
+    org_id: Optional[str]
     topic: Optional[str]
-    urgency: Optional[str]
-    nature: Optional[str]
+    importance: Optional[str]
     channel: str
     enabled: bool
     mandatory: bool
 
 
-def _policy_rows(session: Session, org: Optional[int]) -> tuple:
+def _policy_rows(session: Session, org: Optional[Any]) -> tuple:
     entry = _policy_cache.get(org)
     if not _fresh(entry):
         rows = session.exec(
             select(NotificationChannelPolicy).where(
                 sa_or(
                     NotificationChannelPolicy.org_id.is_(None),
-                    NotificationChannelPolicy.org_id == org,
+                    NotificationChannelPolicy.org_id == normalize_id(org),
                 )
             )
         ).all()
@@ -249,8 +407,9 @@ def _policy_rows(session: Session, org: Optional[int]) -> tuple:
                     id=r.id,
                     org_id=r.org_id,
                     topic=r.topic,
-                    urgency=r.urgency.value if r.urgency else None,
-                    nature=r.nature.value if r.nature else None,
+                    # A plain string since 0.19.0 (the column is a catalogue
+                    # key, not an enum member), so nothing to unwrap.
+                    importance=r.importance,
                     channel=r.channel,
                     enabled=r.enabled,
                     mandatory=r.mandatory,
@@ -264,47 +423,78 @@ def _policy_rows(session: Session, org: Optional[int]) -> tuple:
 
 def resolve_channels(
     session: Session,
-    org: Optional[int],
+    # The host's own org id, in whatever shape the host's keys take; normalised
+    # on the way into the policy lookup like every other identity argument.
+    org: Optional[Any],
     *,
     topic: str,
-    nature: Nature,
-    urgency: Urgency,
+    importance: Any,
 ) -> dict[str, bool]:
     """The effective channel set for one emit: ``{channel: mandatory}`` for
     every **enabled** channel.
 
-    Per channel, most specific wins (DR 0003 S-5): a topic row beats an axis
-    row beats the built-in fallback; within a tier an org override row beats a
-    platform row, and an axis row matching more fields beats one matching
-    fewer. The fallback is the pre-0.16 rule in code — ``low`` → in-app only,
-    else in-app + email — so empty policy tables reproduce 0.15 routing
-    exactly. Reason is not a policy condition yet (it joins with U-3's
-    preference layer)."""
+    The policy table is a **(topic × importance) matrix** with either coordinate
+    optional, and per channel the most specific matching cell wins:
+
+    1. both coordinates match — this topic at this importance
+    2. topic matches, importance is NULL — this topic, any importance
+    3. importance matches, topic is NULL — any topic at this importance
+    4. both NULL — the org-wide default row
+    5. no row — the built-in fallback: in-app always, plus email when the
+       rung's own catalogue row says ``emails_by_default`` (the seeded ``low``
+       says no and ``high`` says yes, so empty policy tables route exactly as
+       they did before the catalogue existed)
+
+    Within a tier an org override row beats a platform row, and a tie between
+    equally specific rows resolves to the NEWEST, so an administrator's latest
+    change takes effect rather than being shadowed by a stale predecessor.
+
+    Tier 1 arrived in 0.17.0. Before it a CHECK constraint forbade a row from
+    carrying both coordinates, so the matrix was really two independent lists and
+    "this topic, but only when it matters" was unstorable. A topic rule also
+    silently ignored the second axis, which meant the closest thing an
+    administrator could write applied far more widely than they intended.
+
+    **The second coordinate is ``importance``, and since 0.19.0 it is a
+    CATALOGUE rather than an enum.** It was ``urgency`` with three rungs until
+    0.18.0, and the middle one selected exactly what the top one did, so it was
+    a coordinate an administrator could only ever have used to write the same
+    rule twice; dropping it was right, and hard-coding the survivors into the
+    column type was the overcorrection. A rung is a row in
+    ``notification_importance`` now, and its ``emails_by_default`` is what step
+    5 reads, so a deployment can add one and say what it means without touching
+    this package. ``nature`` is not a condition either, and since 0.18.0 is not
+    in this package at all: it described what the notification asks of the
+    recipient, which is presentation, and the host renders its own feed."""
     rows = _policy_rows(session, org)
     channels = {IN_APP, "email"} | {r.channel for r in rows}
+    importance_value = (
+        importance.value if isinstance(importance, Importance) else str(importance)
+    )
     resolved: dict[str, bool] = {}
     for channel in channels:
-        topic_rows = [r for r in rows if r.channel == channel and r.topic == topic and r.topic is not None]
-        axis_rows = [
+        # Every cell whose set coordinates match this emit. A NULL coordinate is
+        # a wildcard, so a row is a candidate unless one of its stated
+        # coordinates disagrees.
+        candidates = [
             r
             for r in rows
             if r.channel == channel
-            and r.topic is None
-            and (r.urgency is None or r.urgency == urgency.value)
-            and (r.nature is None or r.nature == nature.value)
+            and (r.topic is None or r.topic == topic)
+            and (r.importance is None or r.importance == importance_value)
         ]
         pick = None
-        # Ties (equally specific duplicate rows — the table has no uniqueness
-        # constraint) resolve to the NEWEST row: an admin's latest change must
-        # take effect, never be shadowed by a stale predecessor.
-        if topic_rows:
-            pick = max(topic_rows, key=lambda r: (r.org_id is not None, r.id))
-        elif axis_rows:
+        if candidates:
+            # Specificity first (a two-coordinate cell outranks either
+            # one-coordinate rule, which outranks the all-NULL default), then an
+            # org row over a platform row, then the newest id to break a tie
+            # between equally specific rows — the table has no uniqueness
+            # constraint, and an admin's latest change must win.
             pick = max(
-                axis_rows,
+                candidates,
                 key=lambda r: (
+                    (r.topic is not None) + (r.importance is not None),
                     r.org_id is not None,
-                    (r.urgency is not None) + (r.nature is not None),
                     r.id,
                 ),
             )
@@ -313,7 +503,7 @@ def resolve_channels(
                 resolved[channel] = pick.mandatory
         elif channel == IN_APP:
             resolved[channel] = False
-        elif channel == "email" and urgency is not Urgency.low:
+        elif channel == "email" and _emails_by_default(session, org, importance_value):
             resolved[channel] = False
     return resolved
 
@@ -341,26 +531,29 @@ def suppressed():
 
 def notify(
     session: Session,
-    recipients: Iterable[int],
+    recipients: Iterable[Any],
     action: Optional[str] = None,
     *,
     topic: Optional[str] = None,
-    nature: Optional[Nature] = None,
-    urgency: Optional[Urgency] = None,
-    reason: Optional[Reason] = None,
+    # A seeded ``Importance`` member or any key in ``notification_importance``;
+    # validated against the catalogue rather than coerced through an enum.
+    importance: Optional[Any] = None,
     title: Optional[str] = None,
     body: Optional[str] = None,
     link: Optional[str] = None,
     template: Optional[str] = None,
     data: Optional[dict] = None,
-    actor_user_id: Optional[int] = None,
+    # Any host id, like every other identity argument: this is compared
+    # against the recipient list through ``normalize_id`` and never stored, so a
+    # UUID host excludes its own actor exactly as an int host does.
+    actor_user_id: Optional[Any] = None,
     entity_type: Optional[str] = None,
-    entity_id: Optional[int] = None,
-    org_id: Optional[int] = None,
+    entity_id: Optional[Any] = None,
+    org_id: Optional[Any] = None,
     record: Any = None,
+    locale: Optional[str] = None,
     coalesce_unread: bool = False,
     merge_body: Optional[Callable[[Optional[str], Optional[str]], Optional[str]]] = None,
-    category: Optional[Nature] = None,  # deprecated alias for nature (0.15 name)
     kind: Optional[str] = None,  # deprecated alias for action (0.15 name)
 ) -> list[Notification]:
     """Insert notification (+ delivery) rows in the caller's transaction.
@@ -368,7 +561,7 @@ def notify(
     DR 0003: ``action`` is the application action that caused this emit
     (``"job.publish"`` — imperative, the app's own vocabulary), a *reference
     without declaration*: provenance, the coalescing identity, and nothing
-    else. ``None`` marks an ad hoc one-off, which never coalesces. The four
+    else. ``None`` marks an ad hoc one-off, which never coalesces. The two
     axes travel on the call; ``topic`` is required with an action (ad hoc
     emits land in the seeded ``general`` topic) and must exist in
     ``notification_topic`` — the one fail-loud reference, because policy and
@@ -408,42 +601,34 @@ def notify(
             stacklevel=2,
         )
         action = action if action is not None else kind
-    if category is not None:
-        warnings.warn(
-            "notify(category=...) is deprecated: the axis is nature= now",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        nature = nature if nature is not None else category
+    # ``nature=`` and ``category=`` are NOT accepted-and-ignored here, which is
+    # deliberate: a renamed axis can take an alias, a REMOVED one cannot. Values
+    # for an axis this package no longer stores would be silently discarded, so
+    # the natural TypeError on an unexpected keyword is the right failure — loud,
+    # at the call site, naming the argument.
+    #
     # The shim applies ONLY to fully-legacy calls (no axis passed at all): a
     # call site that states even one axis has been converted and must get the
     # new fail-loud contract, not silent backfill from a spec that will be
     # deleted next release.
     if (
         action is not None
-        and nature is None
-        and urgency is None
-        and reason is None
+        and importance is None
         and topic is None
         and (spec := _KINDS.get(action)) is not None
     ):
         warnings.warn(
             f"notify({action!r}) is using register_kind() defaults — pass the "
-            "four axes explicitly; the kind shim goes away next release (DR 0003)",
+            "axes explicitly; the kind shim goes away next release (DR 0003)",
             DeprecationWarning,
             stacklevel=2,
         )
-        nature, urgency, reason, topic = spec.category, spec.urgency, spec.reason, spec.topic
+        importance, topic = spec.importance, spec.topic
 
-    missing = [
-        name
-        for name, value in (("nature", nature), ("urgency", urgency), ("reason", reason))
-        if value is None
-    ]
-    if missing:
+    if importance is None:
         raise TypeError(
-            f"notify() is missing the {', '.join(missing)} axis/axes: pass them "
-            "explicitly — there is no kind catalog to default from (DR 0003)"
+            "notify() is missing the importance axis: pass it explicitly — "
+            "there is no kind catalog to default from (DR 0003)"
         )
     if action is not None and topic is None:
         raise TypeError(
@@ -454,9 +639,13 @@ def notify(
         topic = DEFAULT_TOPIC  # ad hoc emits land in the seeded general topic
     if title is None:
         raise TypeError("notify() requires title= (template rendering lands with U-4)")
-    nat = Nature(nature)
-    urg = Urgency(urgency)
-    rsn = Reason(reason)
+    # A host may hand over either a member of the seeded enum or a bare string;
+    # what it may NOT hand over is a rung nothing seeded, which is checked
+    # against the catalogue below beside the topic. The retired ``urgency``
+    # middle rung gets no special case: unless a deployment has actually seeded
+    # ``normal`` as a rung of its own, it fails as the unknown value it is,
+    # which is what tells an unconverted call site apart from a configured one.
+    imp = str(getattr(importance, "value", importance))
 
     # The one reference an emit can get wrong that management depends on:
     # policy rows and (U-3) preferences key on topic, so an unknown topic is a
@@ -467,6 +656,18 @@ def notify(
         raise LookupError(
             f"unknown notification topic {topic!r}: seed it in "
             "notification_topic (platform row) before emitting into it"
+        )
+
+    # The second reference, and it fails the same way for the same reason: the
+    # matrix keys on this axis too, so a rung nothing seeded is a catalog
+    # mistake. Before 0.19.0 this was a ``ValueError`` out of an enum
+    # constructor, which said the value was invalid; it says where to fix it
+    # now, because the answer is a row and not a code change.
+    if not _importance_known(session, imp):
+        raise LookupError(
+            f"unknown notification importance {imp!r}: seed it in "
+            "notification_importance (platform row, or an org override) "
+            "before emitting at it"
         )
 
     if _suppress_notify.get():
@@ -488,7 +689,12 @@ def notify(
         )
     ids = list(dict.fromkeys(u for u in recipients if u is not None))
     if actor_user_id is not None:
-        ids = [u for u in ids if u != actor_user_id]
+        # Compared through the storage form, so a host that hands the actor over
+        # in one shape and the recipients in another (a UUID object against its
+        # string, say) still excludes them. Comparing raw would silently notify
+        # somebody of their own action, which is the invariant this line IS.
+        actor = normalize_id(actor_user_id)
+        ids = [u for u in ids if normalize_id(u) != actor]
     if record is not None and not entity_type and _recipient_filter is not None:
         # "must never leak a private record" is only enforceable when the
         # filter can actually run. A record without its entity_type used to
@@ -508,7 +714,7 @@ def notify(
     if not ids:
         return []
 
-    resolved = resolve_channels(session, org, topic=topic, nature=nat, urgency=urg)
+    resolved = resolve_channels(session, org, topic=topic, importance=imp)
     if IN_APP not in resolved:
         # The notification row is both the feed entry and the FK anchor for
         # delivery rows, so "no in_app" means nothing lands anywhere. That is
@@ -533,16 +739,16 @@ def notify(
             existing = session.exec(
                 select(Notification)
                 .where(
-                    Notification.user_id == user_id,
+                    Notification.user_id == normalize_id(user_id),
                     # The org axis is part of the coalesce identity (DR 0001
                     # T5, defect T-6): where hosts' entity ids are not
                     # globally unique, an org-2 emit must never fold into —
                     # and overwrite — an org-1 row for the same (user, action,
                     # entity).
-                    Notification.org_id == org,
+                    Notification.org_id == normalize_id(org),
                     Notification.action == action,
                     Notification.entity_type == entity_type,
-                    Notification.entity_id == entity_id,
+                    Notification.entity_id == normalize_id(entity_id),
                     Notification.read_at.is_(None),
                     # An archived row has left the recipient's inbox. Folding a
                     # new event into it would update something they can no
@@ -574,17 +780,25 @@ def notify(
             return updated
 
     created: list[Notification] = []
+    def _locale_for(user_id: Any) -> Optional[str]:
+        """Per RECIPIENT, not per emit: one notify can fan out to people who
+        read different languages, so this cannot be hoisted out of the loop."""
+        if locale is not None:
+            return locale
+        if _locale_resolver is None:
+            return None
+        return _locale_resolver(session, user_id)
+
     for user_id in ids:
         n = Notification(
-            user_id=user_id,
-            org_id=org,
+            locale=_locale_for(user_id),
+            user_id=normalize_id(user_id),
+            org_id=normalize_id(org),
             action=action,
             topic=topic,
-            nature=nat,
-            urgency=urg,
-            reason=rsn,
+            importance=imp,
             entity_type=entity_type,
-            entity_id=entity_id,
+            entity_id=normalize_id(entity_id),
             title=title,
             body=body,
             link=link,
@@ -603,7 +817,7 @@ def notify(
 # ── feed / read state ────────────────────────────────────────────────────────
 
 
-def unread_count(session: Session, user_id: int) -> int:
+def unread_count(session: Session, user_id: Any) -> int:
     """Unread rows still in the inbox. Archived rows are excluded — they have left
     the recipient's list, so counting them would leave a badge pointing at nothing.
 
@@ -622,14 +836,12 @@ def unread_count(session: Session, user_id: int) -> int:
 
 def list_feed(
     session: Session,
-    user_id: int,
+    user_id: Any,
     *,
     state: str = "open",
     unread_only: bool = False,
-    nature: Optional[Nature] = None,
     page: int = 1,
     page_size: int = 20,
-    category: Optional[Nature] = None,  # deprecated alias for nature (0.15 name)
 ) -> tuple[list[Notification], int]:
     """One page of the recipient's feed plus the filtered total, paged in SQL.
 
@@ -638,14 +850,15 @@ def list_feed(
     directly. ``total`` (COUNT) and the page SELECT are two statements with no
     shared snapshot: a commit landing between them can skew total against the
     page by a row — the standard COUNT + LIMIT/OFFSET trade, transient and
-    self-healing on the next poll."""
-    if category is not None:
-        warnings.warn(
-            "list_feed(category=...) is deprecated: the parameter is nature= now",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        nature = nature if nature is not None else category
+    self-healing on the next poll.
+
+    **There is no presentation filter here any more.** ``nature=`` narrowed the
+    feed on the axis that left the package in 0.18.0. A host that keeps that axis
+    on a sidecar row of its own keeps the ability to filter on it too, in its own
+    query where the column now lives; this package cannot filter on a column it
+    does not own, and a parameter that silently matched everything would be worse
+    than its absence. The two STATE axes (open/archived and unread) are still
+    here, because those are this package's own columns."""
     conditions = _recipient_conditions(session, user_id)
     if state == "open":
         conditions.append(Notification.archived_at.is_(None))
@@ -653,8 +866,6 @@ def list_feed(
         conditions.append(Notification.archived_at.is_not(None))
     if unread_only:
         conditions.append(Notification.read_at.is_(None))
-    if nature is not None:
-        conditions.append(Notification.nature == nature)
     total = session.exec(
         select(sa_func.count()).select_from(Notification).where(*conditions)
     ).one()
@@ -668,20 +879,25 @@ def list_feed(
     return list(rows), total
 
 
-def _owned(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def _owned(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """The row, iff it belongs to this recipient — and, when a request context
     supplies an org, to this org. A cross-org id probe answers exactly like a
     missing row (404 at the router), never confirming the row exists."""
     n = session.get(Notification, notification_id)
-    if n is None or n.user_id != user_id:
+    # Compared through the storage form on BOTH sides. This check is in Python
+    # rather than SQL, so it is the one ownership test that does not go through
+    # ``_recipient_conditions``: without normalising here, a host whose resolver
+    # hands over an int gets `'1' != 1` and every read of its own row answers
+    # 404. Which is what this package's own router tests caught.
+    if n is None or n.user_id != normalize_id(user_id):
         return None
     org_id = current_org_id(session)
-    if org_id is not None and n.org_id != org_id:
+    if org_id is not None and n.org_id != normalize_id(org_id):
         return None
     return n
 
 
-def mark_read(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def mark_read(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Mark one owned row read (idempotent); None when :func:`_owned` says the
     row is not this recipient's — or, under an org context, not this org's."""
     n = _owned(session, user_id, notification_id)
@@ -695,7 +911,7 @@ def mark_read(session: Session, user_id: int, notification_id: int) -> Optional[
     return n
 
 
-def mark_all_read(session: Session, user_id: int) -> int:
+def mark_all_read(session: Session, user_id: Any) -> int:
     """Every unread row, archived ones included — a superset of what
     :func:`unread_count` counts, so this can never leave the badge non-zero."""
     result = session.execute(
@@ -715,7 +931,7 @@ def mark_all_read(session: Session, user_id: int) -> int:
 # have read it, and clear it only when they act on it or file it away.
 
 
-def archive(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def archive(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Idempotent: archiving an archived row is a no-op, not an error.
 
     Sequentially that also keeps the original timestamp; two *concurrent*
@@ -736,7 +952,7 @@ def archive(session: Session, user_id: int, notification_id: int) -> Optional[No
     return n
 
 
-def unarchive(session: Session, user_id: int, notification_id: int) -> Optional[Notification]:
+def unarchive(session: Session, user_id: Any, notification_id: int) -> Optional[Notification]:
     """Back into the inbox. Read state is untouched — the two axes are independent,
     so restoring a row does not make it unread again."""
     n = _owned(session, user_id, notification_id)
@@ -750,7 +966,7 @@ def unarchive(session: Session, user_id: int, notification_id: int) -> Optional[
     return n
 
 
-def archive_read(session: Session, user_id: int) -> int:
+def archive_read(session: Session, user_id: Any) -> int:
     """Bulk "clear what I've dealt with": archives the recipient's read rows and
     leaves unread ones alone. Never archives unread rows — that would hide
     something the recipient has not seen."""
@@ -837,13 +1053,12 @@ def dispatch_pending(engine, *, limit: int = 100) -> int:
                 _notification_t.c.org_id,
                 _notification_t.c.action,
                 _notification_t.c.topic,
-                _notification_t.c.nature,
-                _notification_t.c.urgency,
-                _notification_t.c.reason,
+                _notification_t.c.importance,
                 _notification_t.c.title,
                 _notification_t.c.body,
                 _notification_t.c.link,
                 _notification_t.c.data,
+                _notification_t.c.locale,
                 _notification_t.c.created_at,
             )
             .select_from(
@@ -889,14 +1104,13 @@ def dispatch_pending(engine, *, limit: int = 100) -> int:
             org_id=r.org_id,
             action=r.action,
             topic=r.topic,
-            nature=r.nature,
-            urgency=r.urgency,
-            reason=r.reason,
+            importance=r.importance,
             title=r.title,
             body=r.body,
             link=r.link,
             data=r.data,
             created_at=r.created_at,
+            locale=r.locale,
         )
         try:
             adapter.send(payload)

@@ -31,14 +31,6 @@ def client(migrated):
     return TestClient(app)
 
 
-@pytest.fixture()
-def action_kind(session):
-    notifications.register_kind(
-        "test.action", category="action", urgency="normal", reason="participant"
-    )
-    return "test.action"
-
-
 # ── service ──────────────────────────────────────────────────────────────────
 
 
@@ -124,7 +116,7 @@ def test_coalescing_never_merges_into_an_archived_row(session, ambient_kind):
     )
 
     rows = session.exec(
-        select(Notification).where(Notification.user_id == 1)
+        select(Notification).where(Notification.user_id == "1")
     ).all()
     assert len(rows) == 2, "the archived row was reused instead of a fresh one"
     assert session.get(Notification, first.id).title == "v1"  # untouched
@@ -145,7 +137,7 @@ def test_coalescing_still_merges_into_a_live_row(session, ambient_kind):
     )
 
     rows = session.exec(
-        select(Notification).where(Notification.user_id == 1)
+        select(Notification).where(Notification.user_id == "1")
     ).all()
     assert len(rows) == 1
     assert rows[0].id == first.id and rows[0].title == "v2"
@@ -192,28 +184,30 @@ def test_unread_count_ignores_the_requested_filters(session, kind, client):
         assert client.get(f"/me/notifications{query}").json()["unread_count"] == 2
 
 
-def test_category_composes_with_state_and_unread(session, kind, action_kind, client):
-    action = emit(session, action_kind, [1])[0]
+def test_the_two_state_axes_compose_and_reading_is_not_archiving(session, kind, client):
+    """Read and archived are two axes, and each one composes with the other.
+
+    This used to narrow on the presentation axis as well (Teamy's "needs
+    action" view), which left the package in 0.18.0 along with the column: a
+    host that keeps it on a sidecar row filters on it in its own query. The half
+    that was never about that axis is the half that matters and is kept — a row
+    stays in the inbox once READ, and archiving is what removes it.
+    """
+    first = emit(session, kind, [1])[0]
     emit(session, kind, [1])
 
-    assert client.get("/me/notifications?category=action").json()["total"] == 1
+    assert client.get("/me/notifications").json()["total"] == 2
+    assert client.get("/me/notifications?unread_only=true").json()["total"] == 2
 
-    # Read it: an action row stays in the open+action view. This is the case
-    # Teamy's "needs action" filter rides on — reading is not acting.
-    client.post(f"/me/notifications/{action.id}/read")
-    assert client.get("/me/notifications?category=action").json()["total"] == 1
-    assert (
-        client.get("/me/notifications?category=action&unread_only=true").json()["total"]
-        == 0
-    )
+    # Read it: it stays in the open view, and leaves the unread one.
+    client.post(f"/me/notifications/{first.id}/read")
+    assert client.get("/me/notifications").json()["total"] == 2
+    assert client.get("/me/notifications?unread_only=true").json()["total"] == 1
 
     # Archiving is what removes it.
-    client.post(f"/me/notifications/{action.id}/archive")
-    assert client.get("/me/notifications?category=action").json()["total"] == 0
-    assert (
-        client.get("/me/notifications?state=archived&category=action").json()["total"]
-        == 1
-    )
+    client.post(f"/me/notifications/{first.id}/archive")
+    assert client.get("/me/notifications").json()["total"] == 1
+    assert client.get("/me/notifications?state=archived").json()["total"] == 1
 
 
 def test_archived_at_is_exposed_on_the_read_model(session, kind, client):
