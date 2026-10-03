@@ -174,6 +174,32 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# Postgres-only DDL; SQLite records the version and creates nothing",
         ),
     ),
+    "tenancy": BootSnippet(
+        imports=("import asas_tenancy", "from sqlalchemy import event"),
+        setup=(
+            "# Pin the request's tenant on every transaction, so Postgres row-level\n"
+            "# security scopes each query. Bind it once per request from a VERIFIED\n"
+            "# credential: asas_tenancy.bind_tenant(<tenant id from the token>).",
+            "@event.listens_for(Session, \"after_begin\")\n"
+            "def _pin_tenant(session, transaction, connection):\n"
+            "    tenant = asas_tenancy.maybe_tenant_id()\n"
+            "    if tenant is not None:\n"
+            "        asas_tenancy.set_tenant_guc(connection, tenant)",
+            "# Protect each tenant table in your own migrations: "
+            "asas_tenancy.enable_rls(\"<table>\")  # TODO",
+        ),
+    ),
+    "audit": BootSnippet(
+        imports=("import asas_audit",),
+        setup=(
+            "def current_tenant() -> str:\n"
+            "    ...  # TODO: the verified tenant id of this request (a token claim)",
+            "app.include_router(asas_audit.build_router(get_session, tenant=current_tenant))",
+            "# Record a business action IN the unit of work that makes the change, so the\n"
+            "# audit row commits or rolls back with it: asas_audit.append(session, ...).",
+        ),
+        boot=("asas_audit.migrate(engine)",),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
