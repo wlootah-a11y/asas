@@ -49,6 +49,8 @@ from .errors import (
     OracleAlreadyExistsError,
     OracleGatewayError,
     OracleLockedError,
+    OraclePhaseEntryRequiredError,
+    OracleStateRefusedError,
     OracleAuthError,
     OracleNotConfiguredError,
     OracleNotFoundError,
@@ -77,6 +79,26 @@ _DUPLICATE_MARKERS = ("already exists", "duplicate", "unique")
 #: user holds the lock." A 400, and TRANSIENT, so it gets its own class and a
 #: caller with an outbox can back off instead of parking the row.
 _LOCK_MARKERS = ("another user holds the lock", "failed to lock the record")
+
+#: Fusion's requisition LIFECYCLE refusing a phase or state move. A verdict on
+#: the record, so a caller with an outbox must fail the row rather than retry
+#: it. Measured across 169 moves on a recruiting instance; all five come from
+#: ``LifecycleAMImpl.setCurrentPhaseAndState`` or
+#: ``PhaseStepProcessor.activateStateStep``.
+_LIFECYCLE_MARKERS = (
+    "setcurrentphaseandstate",
+    "activatestatestep",
+    "not adjacent to current state",
+    "differs from lifecycle instance",
+    "cannot be moved further",
+    "target state is not available",
+    "cannot move directly into new phase terminal state",
+)
+
+#: The ONE lifecycle refusal a second attempt can get past, by entering the
+#: target phase at a non-terminal state first. Tested BEFORE the rest, being a
+#: special case of them.
+_PHASE_ENTRY_MARKER = "cannot move directly into new phase terminal state"
 
 #: What an API GATEWAY says when it refuses before Oracle is reached at all:
 #: an operation it does not carry, a transport it was not registered for, a
@@ -368,6 +390,13 @@ class OracleFusionClient:
                 kind = OracleAlreadyExistsError
             elif code == 400 and _matches(text, _LOCK_MARKERS):
                 kind = OracleLockedError
+            # Fusion's lifecycle, before the gateway test for the same reason
+            # the lock is: these are Oracle's own words about a record, and
+            # the gateway markers are loose enough to claim them.
+            elif code in (400, 409) and _PHASE_ENTRY_MARKER in text.lower():
+                kind = OraclePhaseEntryRequiredError
+            elif code in (400, 409) and _matches(text, _LIFECYCLE_MARKERS):
+                kind = OracleStateRefusedError
             # LAST of the prose tests, so a refusal Oracle itself made is
             # never relabelled as the gateway's: the markers are loose, and
             # "resource not found" could be either on a 404 the branch above

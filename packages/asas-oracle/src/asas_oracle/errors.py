@@ -121,6 +121,52 @@ class OracleLockedError(OracleUpstreamError):
     """
 
 
+class OracleStateRefusedError(OracleUpstreamError):
+    """Fusion's own lifecycle refused a phase or state change on a record.
+
+    A 400 with prose, like the duplicate and the lock, so it is told apart by
+    its words rather than by its status. Its own class because it is a VERDICT
+    ON THE RECORD and not a fault: the record is not in a state the move can
+    start from, the target is not adjacent to the current one, or the record's
+    own lifecycle row disagrees with its state. Sending the same move again
+    gets the same answer, so a caller with an outbox must FAIL the row rather
+    than spend its attempts, which is the opposite of what
+    :class:`OracleLockedError` asks for.
+
+    Measured on a Fusion recruiting instance across 169 phase and state moves.
+    Five distinct refusals share this shape, all emitted by
+    ``LifecycleAMImpl.setCurrentPhaseAndState`` or
+    ``PhaseStepProcessor.activateStateStep``.
+
+    Not transient, so it never trips the circuit breaker: one record refusing
+    a move says nothing about whether Oracle is reachable.
+    """
+
+    @property
+    def is_transient(self) -> bool:
+        return False
+
+
+class OraclePhaseEntryRequiredError(OracleStateRefusedError):
+    """The ONE lifecycle refusal a second attempt can get past.
+
+    Fusion refuses a move that lands a TERMINAL state in a phase the record is
+    not in yet ("Cannot move directly into new phase terminal state"). Entering
+    that phase at a non-terminal state first and asking again is accepted.
+
+    It is a subclass, so a caller that only knows the parent still treats it as
+    final, which is the safe default. A caller that knows this class can walk
+    the lifecycle. It is deliberately NOT raised for any other refusal: "target
+    state is not adjacent" is not helped by an extra hop, and attempting one
+    could leave the record in a state nobody asked for.
+
+    Measured narrower than it first looks. On the instance tested, only the
+    CANCELED state is refused across a phase boundary; the equivalent moves
+    into Filled and Rejected were accepted, so a caller must not assume every
+    terminal state behaves this way.
+    """
+
+
 class OracleGatewayError(OracleUpstreamError):
     """The API gateway refused before Oracle was reached at all.
 

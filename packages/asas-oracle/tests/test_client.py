@@ -11,6 +11,8 @@ from asas_oracle import (
     CachePolicy,
     NullCache,
     OracleAlreadyExistsError,
+    OraclePhaseEntryRequiredError,
+    OracleStateRefusedError,
     OracleFusionClient,
     OracleNotConfiguredError,
     OracleNotFoundError,
@@ -169,6 +171,63 @@ def test_a_duplicate_create_is_already_exists_and_a_plain_400_is_not(client, ora
     oracle.route("/absences", (400, {"detail": "Title is required."}))
     with pytest.raises(OracleUpstreamError) as bad:
         run(client.post("/absences", {}))
+    assert type(bad.value) is OracleUpstreamError
+
+
+#: Verbatim enough to match on, each produced by a real PATCH during a 169-move
+#: lifecycle probe against a Fusion recruiting instance.
+LIFECYCLE_REFUSALS = [
+    "PhaseStepProcessor.activateStateStep()| Target state is not adjacent to current state",
+    "PhaseStepProcessor.activateStateStep()| Target state is not available",
+    "The requisition cannot be moved further as the current state is approved",
+    "Context current state differs from lifecycle instance",
+]
+
+
+@pytest.mark.parametrize("detail", LIFECYCLE_REFUSALS)
+def test_a_lifecycle_refusal_is_its_own_class_and_is_not_transient(client, oracle, detail):
+    # A verdict on the RECORD: the same move gets the same answer, so a caller
+    # with an outbox must fail the row rather than spend its attempts. Falling
+    # through to the generic upstream error would leave it judged by status
+    # alone, and a 400 says nothing about which kind of refusal it is.
+    oracle.route("/requisitions/R-1", (400, {"detail": detail}))
+    with pytest.raises(OracleStateRefusedError) as refused:
+        run(client.patch("/requisitions/R-1", {"PhaseId": 5}))
+    assert refused.value.status == 400
+    assert refused.value.is_transient is False
+    assert not isinstance(refused.value, OraclePhaseEntryRequiredError)
+
+
+def test_the_one_lifecycle_refusal_a_second_attempt_can_pass_is_told_apart(client, oracle):
+    # Fusion refuses a move that lands a terminal state in a phase the record
+    # is not in yet. Entering the phase first and asking again is accepted, so
+    # this one is recoverable where the others are final.
+    oracle.route("/requisitions/R-1", (400, {"detail":
+        "LifecycleAMImpl.setCurrentPhaseAndState()| Cannot move directly into "
+        "new phase terminal state CurrentPhaseId=1 TargetPhaseId=5 TargetStateId=25"}))
+    with pytest.raises(OraclePhaseEntryRequiredError) as entry:
+        run(client.patch("/requisitions/R-1", {"PhaseId": 5, "StateId": 25}))
+    # A caller that only knows the parent still treats it as final, which is
+    # the safe default.
+    assert isinstance(entry.value, OracleStateRefusedError)
+    assert entry.value.is_transient is False
+
+
+def test_a_lifecycle_refusal_does_not_trip_the_breaker(client, oracle):
+    # One record refusing a move says nothing about whether Oracle is
+    # reachable, so it must not switch the resource off for everybody.
+    oracle.route("/requisitions/R-1", (400, {"detail": "Target state is not available"}))
+    for _ in range(10):
+        with pytest.raises(OracleStateRefusedError):
+            run(client.patch("/requisitions/R-1", {"PhaseId": 5}))
+    oracle.route("/requisitions/R-2", (200, {"Id": 2}))
+    assert run(client.get("/requisitions/R-2")) == {"Id": 2}
+
+
+def test_an_ordinary_400_is_still_not_a_lifecycle_refusal(client, oracle):
+    oracle.route("/requisitions/R-1", (400, {"detail": "Title is required."}))
+    with pytest.raises(OracleUpstreamError) as bad:
+        run(client.patch("/requisitions/R-1", {"Title": ""}))
     assert type(bad.value) is OracleUpstreamError
 
 

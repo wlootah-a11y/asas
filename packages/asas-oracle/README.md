@@ -343,8 +343,28 @@ OracleError
     ├── OracleNotFoundError        404: a real answer about a real record
     ├── OracleAuthError            401/403, or no token could be had: configuration, never transient
     ├── OracleAlreadyExistsError   a create refused because a caller-minted key is taken
+    ├── OracleLockedError          another user holds the record's lock: TRANSIENT, back off
+    ├── OracleStateRefusedError    Fusion's lifecycle refused a phase or state move: a verdict
+    │   │                          on the RECORD, never transient, so fail the row
+    │   └── OraclePhaseEntryRequiredError
+    │                               the one such refusal a second attempt can pass: enter the
+    │                               target phase at a non-terminal state first, then ask again
+    ├── OracleGatewayError         the API gateway refused before Oracle was reached
     └── OracleUnavailableError     a breaker is open: refused at once (.retry_after_seconds)
 ```
+
+Four of these are told apart by Oracle's WORDS rather than by its status,
+because Fusion answers 400 for all of them: the duplicate, the row lock, the
+lifecycle refusal and the gateway's own refusal. A refusal whose words are not
+recognised falls through to `OracleUpstreamError`, which is the fail-closed
+side: a host then judges it by status alone.
+
+The two that matter most to a caller with an outbox are opposites, so do not
+collapse them. `OracleLockedError` means somebody has the record open and the
+same write lands once they let go, so **back off and retry**.
+`OracleStateRefusedError` means the record is not in a state the move can
+start from, so the same write is refused identically for ever and the row
+should **fail at once** rather than spend a day of attempts.
 
 Oracle's response body is never put on an exception (it carries tenant detail
 and signed URLs); it is logged at debug level. None of these carries an HTTP
