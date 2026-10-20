@@ -157,6 +157,14 @@ _SPECS = [
         "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
         "table-less, router-less (AI tier)",
     ),
+    PackageSpec(
+        "lifecycle",
+        "asas-lifecycle",
+        "asas_lifecycle",
+        "packages/asas-lifecycle",
+        "Typed record-status state machine: named, guarded transitions, loud definitions, structured errors.",
+        "table-less, router-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

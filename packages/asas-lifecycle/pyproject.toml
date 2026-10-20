@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "asas-lifecycle"
+version = "0.1.0"
+description = "Asas lifecycle module: a small typed state machine for record statuses, with named and guarded transitions, terminal states, definition-time validation that fails loud, structured transition errors, a self-describing catalog, and history handed to a host-supplied sink."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Developers",
+]
+dependencies = []
+
+[project.optional-dependencies]
+fastapi = [
+    "fastapi>=0.110,<1",
+]
+dev = [
+    "pytest>=8",
+    "fastapi>=0.110,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asas_lifecycle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

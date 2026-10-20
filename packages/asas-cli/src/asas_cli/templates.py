@@ -268,6 +268,30 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "lifecycle": BootSnippet(
+        imports=("import asas_lifecycle", "from enum import StrEnum"),
+        setup=(
+            "class ExampleStatus(StrEnum):  # TODO: your record's real status enum\n"
+            '    DRAFT = "draft"\n'
+            '    ACTIVE = "active"\n'
+            '    CLOSED = "closed"',
+            "",
+            "# Validated when built: a typo'd state, an unreachable state or a terminal\n"
+            "# state with a way out fails the boot, listing every problem.\n"
+            "EXAMPLE_LIFECYCLE = asas_lifecycle.Lifecycle(\n"
+            '    "example",  # TODO: the record\'s noun, used in errors and sentences\n'
+            "    ExampleStatus,\n"
+            "    initial=ExampleStatus.DRAFT,\n"
+            "    terminal={ExampleStatus.CLOSED},\n"
+            "    transitions=[\n"
+            '        (ExampleStatus.DRAFT, ExampleStatus.ACTIVE, "publish"),\n'
+            '        (ExampleStatus.ACTIVE, ExampleStatus.CLOSED, "close"),\n'
+            "    ],\n"
+            ")",
+            "# In a service: record = EXAMPLE_LIFECYCLE.transition(row.status, target, context=...)\n"
+            "# then persist record (from, to, action) in your own history table if you keep one.",
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
