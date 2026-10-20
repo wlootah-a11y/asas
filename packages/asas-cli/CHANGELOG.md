@@ -5,6 +5,10 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.7 (unreleased)
+
+- `asas add sync` and `asas new` know `asas-sync`: a registry entry, a boot snippet and the offline fallback tag `asas-sync/v0.1.0`.
+
 ## 0.1.6 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.3.0`, the release that

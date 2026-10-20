@@ -268,6 +268,15 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "sync": BootSnippet(
+        imports=("import asas_sync",),
+        setup=(
+            "# spec = asas_sync.SyncSpec(resource=..., collection=MyRemote(), key=..., stamp=..., "
+            "upsert=...)  # TODO: one per remote collection",
+            "# await asas_sync.run_pass(lambda: Session(engine), spec)  # TODO: on a schedule or event",
+        ),
+        boot=("asas_sync.migrate(engine)",),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(

@@ -1,4 +1,4 @@
-"""The seven ``migrate.py`` files must stay byte-identical modulo per-package data.
+"""The eight ``migrate.py`` files must stay byte-identical modulo per-package data.
 
 Every table-owning package carries its own copy of the adopt-or-create migration
 runner. That duplication is a **deliberate standing choice** (Teamy TEAMY-798,
@@ -15,7 +15,7 @@ while the other five said *alongside*. DR 0017 §4 was corrected during the
 pilot; that one docstring never was, so the oldest copy documented the opposite
 of what every host actually does.
 
-If this test fails, the fix is to apply your change to **all seven** files — not
+If this test fails, the fix is to apply your change to **all eight** files — not
 to loosen the normalisation. The only thing that may join the normalised set is
 genuinely per-package *data* — the identity of the package and the shape of the
 schema it owns. Logic and prose must stay identical, which is the whole point.
@@ -56,18 +56,22 @@ def normalise(path: pathlib.Path) -> str:
     text = _COLUMNS_BLOCK.sub("_SENTINEL_COLUMNS = frozenset({<COLUMNS>})", text)
     text = _TABLES_BLOCK.sub("_BASELINE_TABLES = frozenset({<TABLES>})", text)
     text = _RENAMED_BLOCK.sub("_RENAMED_PAIRS = (<RENAMES>)\n", text)
-    # Order matters: the module form is a substring of nothing, but the dist form
-    # appears inside the version-table name, so replace the longer names first.
-    text = text.replace(f"alembic_version_{module}", "alembic_version_<PKG>")
-    text = text.replace(dist, "<DIST>").replace(module, "<MODULE>")
+    # Order matters twice over. The sentinel goes first: a sentinel table named
+    # after its package (``asas_sync_cursor``) contains the module name, and
+    # replacing the module first would leave ``<MODULE>_cursor`` where every
+    # other copy has ``<SENTINEL>``, a normalisation artefact and not drift.
+    # Then the version-table name, which contains the module form, before the
+    # bare dist and module forms.
     text = text.replace(f'"{sentinel}"', '"<SENTINEL>"')
     text = text.replace(f"``{sentinel}``", "``<SENTINEL>``")
+    text = text.replace(f"alembic_version_{module}", "alembic_version_<PKG>")
+    text = text.replace(dist, "<DIST>").replace(module, "<MODULE>")
     return text
 
 
 def test_all_table_owning_packages_are_present():
     """A new table-owning package silently skipping this test would defeat it."""
-    assert len(MIGRATES) == 7, f"expected 7 migrate.py files, found {len(MIGRATES)}: {MIGRATES}"
+    assert len(MIGRATES) == 8, f"expected 8 migrate.py files, found {len(MIGRATES)}: {MIGRATES}"
 
 
 @pytest.mark.parametrize("path", MIGRATES[1:], ids=_package_of)
@@ -85,5 +89,5 @@ def test_matches_the_reference_copy(path):
         pytest.fail(
             f"{_package_of(path)}/migrate.py has drifted from "
             f"{_package_of(reference)}/migrate.py.\n"
-            f"Apply the change to all seven copies (see this module's docstring).\n\n{diff}"
+            f"Apply the change to all eight copies (see this module's docstring).\n\n{diff}"
         )

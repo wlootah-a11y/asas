@@ -20,6 +20,7 @@ def test_table_owning_packages_call_migrate_in_boot():
         "notifications",
         "search",
         "audit",
+        "sync",
     }
     for key in table_owning:
         boot_text = "\n".join(SNIPPETS[key].boot)
@@ -40,7 +41,7 @@ def test_router_packages_include_a_router_in_setup():
 
 
 def test_router_less_packages_never_include_a_router():
-    router_less = {"storage", "ratelimit", "jobs", "access", "workflow", "search", "tenancy", "oracle", "graph", "llm", "agent"}
+    router_less = {"storage", "ratelimit", "jobs", "access", "workflow", "search", "tenancy", "oracle", "graph", "llm", "agent", "sync"}
     for key in router_less:
         setup_text = "\n".join(SNIPPETS[key].setup)
         assert "include_router" not in setup_text, key
