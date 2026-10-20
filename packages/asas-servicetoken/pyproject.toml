@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "asas-servicetoken"
+version = "0.1.0"
+description = "Asas service-token module: signed HS256 tokens between two services that share a secret, with the clock-skew rules on both sides (a backdated iat, verifier leeway), a refusal that names its reason, a one-retry httpx sender that clears a drift the first attempt could not, and a FastAPI dependency that admits only a peer holding the secret."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "pyjwt>=2.8",
+]
+
+[project.optional-dependencies]
+httpx = [
+    "httpx>=0.27",
+]
+fastapi = [
+    "fastapi>=0.110,<1",
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "fastapi>=0.110,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asas_servicetoken"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

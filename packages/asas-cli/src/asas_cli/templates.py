@@ -268,6 +268,33 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "servicetoken": BootSnippet(
+        imports=("import asas_servicetoken",),
+        setup=(
+            "# The side that CALLS a peer signs each request; the side that is CALLED\n"
+            "# verifies. Both read the shared secret from settings on every call, so a\n"
+            "# rotated secret needs no restart. An unset secret sends no header and is\n"
+            "# logged once, naming the setting.\n"
+            "peer_issuer = asas_servicetoken.Issuer(\n"
+            "    lambda: settings.service_token_secret,\n"
+            '    issuer="example-app",  # TODO: this service\'s own name (iss and sub)\n'
+            '    audience="example-peer",  # TODO: the service being called (aud)\n'
+            '    unset_hint="SERVICE_TOKEN_SECRET",\n'
+            ")",
+            "peer_verifier = asas_servicetoken.Verifier(\n"
+            "    lambda: settings.service_token_secret,\n"
+            '    issuer="example-peer",  # TODO: the service that calls this one\n'
+            '    audience="example-app",\n'
+            ")",
+            "# Outbound (httpx extra): response = await asas_servicetoken.send_with_service_token(\n"
+            "#     peer_issuer, lambda headers: client.post(url, json=body, headers=headers))",
+            "# Inbound (fastapi extra): APIRouter(dependencies=[Depends(\n"
+            "#     asas_servicetoken.require_service_token(peer_verifier))])",
+        ),
+        settings_fields=(
+            ("service_token_secret", "str", '""'),
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
