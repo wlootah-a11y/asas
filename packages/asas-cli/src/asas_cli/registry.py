@@ -157,6 +157,14 @@ _SPECS = [
         "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
         "table-less, router-less (AI tier)",
     ),
+    PackageSpec(
+        "mail",
+        "asas-mail",
+        "asas_mail",
+        "packages/asas-mail",
+        "Render a message from host templates and send it: Graph sendMail on asas-graph, a file outbox, off as a skip, a redirect, attachments.",
+        "table-less, router-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

@@ -268,6 +268,28 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "mail": BootSnippet(
+        imports=("import asas_mail",),
+        setup=(
+            "def build_mailer() -> asas_mail.Mailer:\n"
+            "    # A folder on a laptop; sends nothing. For a deployment, build\n"
+            "    # asas_mail.GraphTransport(graph_client(), sender=...) on an asas-graph\n"
+            "    # client instead (the `graph` extra). The library reads no configuration.\n"
+            "    transport = asas_mail.FileTransport(settings.mail_outbox_dir)\n"
+            "    return asas_mail.Mailer(\n"
+            "        transport,\n"
+            "        asas_mail.Renderer(),  # TODO: Renderer(\"templates/mail\") for your own templates\n"
+            "        redirect_to=lambda: settings.mail_redirect_to,\n"
+            "    )",
+            "asas_mail.configure(build_mailer)  # lazy: built on the first send",
+            "# await asas_mail.send(to=address, subject=\"Welcome\", template=\"welcome.html\", "
+            "variables={...})  # TODO: one template per message",
+        ),
+        settings_fields=(
+            ("mail_outbox_dir", "str", '".mail-outbox"'),
+            ("mail_redirect_to", "str", '""'),
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
