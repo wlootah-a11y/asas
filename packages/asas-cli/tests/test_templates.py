@@ -27,7 +27,7 @@ def test_table_owning_packages_call_migrate_in_boot():
 
 
 def test_table_less_packages_have_no_boot_lines():
-    table_less = {"validation", "storage", "ratelimit", "mcp", "tenancy", "oracle", "graph", "llm", "agent"}
+    table_less = {"validation", "storage", "ratelimit", "mcp", "tenancy", "oracle", "graph", "llm", "agent", "uaepass"}
     for key in table_less:
         assert SNIPPETS[key].boot == (), key
 
@@ -40,7 +40,7 @@ def test_router_packages_include_a_router_in_setup():
 
 
 def test_router_less_packages_never_include_a_router():
-    router_less = {"storage", "ratelimit", "jobs", "access", "workflow", "search", "tenancy", "oracle", "graph", "llm", "agent"}
+    router_less = {"storage", "ratelimit", "jobs", "access", "workflow", "search", "tenancy", "oracle", "graph", "llm", "agent", "uaepass"}
     for key in router_less:
         setup_text = "\n".join(SNIPPETS[key].setup)
         assert "include_router" not in setup_text, key
@@ -56,7 +56,12 @@ def test_graph_declares_its_own_settings_fields():
     assert names == {"graph_tenant_id", "graph_client_id", "graph_client_secret", "graph_organizer"}
 
 
+def test_uaepass_declares_its_own_settings_fields():
+    names = {name for name, _, _ in SNIPPETS["uaepass"].settings_fields}
+    assert names == {"uaepass_base_url","uaepass_client_id","uaepass_client_secret","uaepass_callback_url"}
+
+
 def test_most_packages_declare_no_extra_settings_fields():
     for key, snippet in SNIPPETS.items():
-        if key not in {"ratelimit", "oracle", "graph"}:
+        if key not in {"ratelimit", "oracle", "graph", "uaepass"}:
             assert snippet.settings_fields == (), key

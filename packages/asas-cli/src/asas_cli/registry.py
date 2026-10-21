@@ -157,6 +157,14 @@ _SPECS = [
         "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
         "table-less, router-less (AI tier)",
     ),
+    PackageSpec(
+        "uaepass",
+        "asas-uaepass",
+        "asas_uaepass",
+        "packages/asas-uaepass",
+        "UAE PASS sign-in: the documented code exchange, typed refusals, the profile parsed into identity facts, the nationality list.",
+        "table-less, router-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

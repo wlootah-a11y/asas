@@ -268,6 +268,32 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "uaepass": BootSnippet(
+        imports=("import functools", "import asas_uaepass"),
+        setup=(
+            "@functools.cache  # ONE client per process: it holds the connection pool\n"
+            "def uaepass_client() -> asas_uaepass.UaePassClient:\n"
+            "    # Built even when unconfigured, so a scaffold with UAE PASS off still\n"
+            "    # boots; every call then fails as UaePassUnconfiguredError (503).\n"
+            "    # Close at shutdown: await uaepass_client().aclose() in your lifespan hook.\n"
+            "    return asas_uaepass.UaePassClient(asas_uaepass.UaePassSettings(\n"
+            "        base_url=settings.uaepass_base_url,  # https://stg-id.uaepass.ae or https://id.uaepass.ae\n"
+            "        client_id=settings.uaepass_client_id,\n"
+            "        client_secret=settings.uaepass_client_secret,\n"
+            "        callback_url=settings.uaepass_callback_url,  # exactly as registered with UAE PASS\n"
+            "    ))",
+            "# url = uaepass_client().authorization_url(state=state, locale=\"ar\")  "
+            "# TODO: send the browser there, keep `state` for the callback",
+            "# profile = await uaepass_client().sign_in(code=code)  "
+            "# TODO: on the callback; profile.uuid is the stable key for a returning person",
+        ),
+        settings_fields=(
+            ("uaepass_base_url", "str", '""'),
+            ("uaepass_client_id", "str", '""'),
+            ("uaepass_client_secret", "str", '""'),
+            ("uaepass_callback_url", "str", '""'),
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
