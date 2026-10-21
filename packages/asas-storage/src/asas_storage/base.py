@@ -9,7 +9,7 @@ writes: traversal safety lives here, not in callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Optional, Protocol, Tuple, runtime_checkable
+from typing import Iterable, Iterator, Optional, Protocol, Tuple, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,34 @@ def valid_key(key: str) -> bool:
 class Storage(Protocol):
     def put(self, key: str, data: bytes, content_type: Optional[str] = None) -> None:
         """Store ``data`` under ``key``, overwriting. Raises ValueError on a bad key."""
+        ...
+
+    def put_stream(
+        self,
+        key: str,
+        chunks: Iterable[bytes],
+        content_type: Optional[str] = None,
+        *,
+        overwrite: bool = True,
+    ) -> int:
+        """Store ``chunks`` under ``key`` WITHOUT holding the object in memory,
+        and return the number of bytes written. For a large upload (a CV, a
+        recording) that arrives as a stream: the path is chunk in, chunk out,
+        so what the process holds tracks the chunk size and the concurrency,
+        never the object. Each backend streams natively (a temp file and a
+        rename, S3 multipart parts, Azure staged blocks); none buffers the
+        iterator, which is what the SDKs do when handed one with no length.
+
+        ``overwrite=False`` refuses a key that already holds an object with
+        ``FileExistsError``, and the refusal is the backend's own atomic
+        create-if-absent (``open("xb")``, ``If-None-Match: *``), never a
+        look-then-write that a concurrent upload could slip between. A host
+        whose keys carry a server-generated uuid uses it to turn a collision
+        from silent cross-record data loss into an error.
+
+        A stream that fails part-way leaves nothing under the key: no torn
+        object, no half-written temp file, no abandoned multipart upload.
+        Raises ValueError on a bad key."""
         ...
 
     def get(self, key: str) -> bytes:

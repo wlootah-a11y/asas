@@ -1,9 +1,21 @@
 # Changelog — `asas-storage`
 
-Versions follow semver, and the git tag matches this file: `asas-storage/v0.15.0`.
+Versions follow semver, and the git tag matches this file: `asas-storage/v0.15.1`.
 Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
+
+## 0.15.1 (unreleased)
+
+- Added `Storage.put_stream(key, chunks, content_type=None, *, overwrite=True) -> int`:
+  store an object that arrives as a stream without holding it in memory, on
+  every backend natively (a temp file and a rename on disk, >= 5 MiB multipart
+  parts on S3, staged blocks on Azure, because `upload_blob(<iterator>)` drains
+  the iterator whole). `overwrite=False` refuses an existing key with
+  `FileExistsError` through the backend's own atomic create-if-absent
+  (`open("xb")`, `If-None-Match: *`), and a stream that fails part-way leaves
+  nothing under the key (no torn file, an aborted multipart upload, uncommitted
+  blocks Azure discards). Additive: `put` is unchanged.
 
 ## 0.15.0 — 2026-08-25
 
