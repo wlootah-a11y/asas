@@ -54,8 +54,38 @@ stat, chunks = storage().fetch(key)     # stat + stream in one backend call
 storage().delete_prefix(f"orgs/{org}/photos/{member_id}")
 ```
 
+`safe_filename` keeps only ASCII by default, the one charset every backend
+accepts. On AWS S3, Azure Blob or `LocalStorage`, pass `ascii_only=False` to keep
+letters and digits in any script, so Arabic names stay readable; never on
+Supabase Storage, which rejects any non-ASCII key. Both modes cap the result at
+160 UTF-8 bytes, extension kept.
+
 Tests point the singleton at a tmp dir: `set_storage(LocalStorage(tmp_path))`
 (`set_storage(None)` resets to lazy re-selection via the factory).
+
+## Streaming uploads
+
+`put` takes bytes. An object that arrives as a stream (a multipart upload part, a
+recording) goes through `put_stream`, which never holds it whole:
+
+```python
+with upload.file as part:                     # anything that yields bytes
+    size = storage().put_stream(key, iter(lambda: part.read(1 << 20), b""), content_type)
+```
+
+- **Each backend streams natively.** Disk writes a temp file and renames it; S3
+  coalesces the chunks into >= 5 MiB multipart parts (one plain `PutObject` when the
+  object never reaches one part); Azure stages blocks and commits the list. The Azure
+  path is written the long way on purpose: `upload_blob(<iterator>)` drains the
+  iterator to find its length (measured on a 5 MB object: a 9.1 MB heap against 2.2 MB
+  for staged blocks, and `length` plus `max_concurrency=1` is worse at 10.1 MB).
+- **`overwrite=False` refuses a key that is taken** with `FileExistsError`, through the
+  backend's own atomic create-if-absent (`open("xb")`, `If-None-Match: *`), never a
+  look-then-write. A host whose keys carry a server-generated uuid uses it to turn a
+  collision from silent cross-record data loss into an error.
+- **A stream that fails part-way leaves nothing under the key:** the temp file is
+  unlinked, the multipart upload aborted, the staged blocks left uncommitted (invisible,
+  and discarded by Azure after a week).
 
 ## Running the tests
 
@@ -69,7 +99,7 @@ it (which presents as the whole leg quietly skipping, not as a failure):
 docker run -d --rm --name azurite -p 10000:10000 mcr.microsoft.com/azure-storage/azurite:3.36.0 azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
 ```
 
-A full local run is `45 passed`; if you see skips, the emulator isn't up. In CI the
+A full local run is `130 passed`; if you see skips, the emulator isn't up. In CI the
 skip is promoted to a hard failure (`ASAS_REQUIRE_AZURE=1`), so the azure leg can
 never vanish silently.
 

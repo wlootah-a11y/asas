@@ -9,12 +9,15 @@ uploads on the next redeploy.
 
 from __future__ import annotations
 
-from typing import Iterator, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 from .base import FileStat, RangeNotSatisfiable, clean_content_type, valid_key
 
 _CHUNK = 64 * 1024
 _BATCH = 1000  # delete_objects hard limit
+# S3 refuses a multipart part under 5 MiB (except the last), so incoming
+# chunks are coalesced to this size before each UploadPart.
+_PART = 5 * 1024 * 1024
 
 
 class S3Storage:
@@ -76,6 +79,94 @@ class S3Storage:
         content_type = clean_content_type(content_type)
         extra = {"ContentType": content_type} if content_type else {}
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra)
+
+    def _precondition_failed(self, exc) -> bool:
+        code = exc.response.get("Error", {}).get("Code", "")
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return code in ("PreconditionFailed", "412") or status == 412
+
+    def put_stream(
+        self,
+        key: str,
+        chunks: Iterable[bytes],
+        content_type: Optional[str] = None,
+        *,
+        overwrite: bool = True,
+    ) -> int:
+        from botocore.exceptions import ClientError
+
+        if not valid_key(key):
+            raise ValueError(f"Invalid storage key: {key!r}")
+        content_type = clean_content_type(content_type)
+        extra = {"ContentType": content_type} if content_type else {}
+        # S3's create-if-absent (If-None-Match: *) rides PutObject and
+        # CompleteMultipartUpload alike, so the guard is the service's and
+        # not a HEAD a concurrent upload could slip behind.
+        guard = {} if overwrite else {"IfNoneMatch": "*"}
+
+        # Coalesce into >= 5 MiB parts; an object that never reaches one part
+        # is a plain PutObject, one round trip against the three of multipart.
+        buffer = bytearray()
+        upload_id: str | None = None
+        parts: List[dict] = []
+        written = 0
+
+        def flush_part() -> None:
+            nonlocal upload_id
+            if upload_id is None:
+                created = self._client.create_multipart_upload(
+                    Bucket=self._bucket, Key=key, **extra
+                )
+                upload_id = created["UploadId"]
+            number = len(parts) + 1
+            answer = self._client.upload_part(
+                Bucket=self._bucket, Key=key, UploadId=upload_id,
+                PartNumber=number, Body=bytes(buffer),
+            )
+            parts.append({"PartNumber": number, "ETag": answer["ETag"]})
+            buffer.clear()
+
+        try:
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                buffer.extend(chunk)
+                written += len(chunk)
+                if len(buffer) >= _PART:
+                    flush_part()
+            if upload_id is None:
+                try:
+                    self._client.put_object(
+                        Bucket=self._bucket, Key=key, Body=bytes(buffer), **extra, **guard
+                    )
+                except ClientError as exc:
+                    if self._precondition_failed(exc):
+                        raise FileExistsError(key) from exc
+                    raise
+                return written
+            if buffer:
+                flush_part()
+            try:
+                self._client.complete_multipart_upload(
+                    Bucket=self._bucket, Key=key, UploadId=upload_id,
+                    MultipartUpload={"Parts": parts}, **guard,
+                )
+            except ClientError as exc:
+                if self._precondition_failed(exc):
+                    raise FileExistsError(key) from exc
+                raise
+            upload_id = None
+            return written
+        finally:
+            if upload_id is not None:
+                # A transfer that failed part-way: abort, or the staged parts
+                # are billed until a lifecycle rule finds them.
+                try:
+                    self._client.abort_multipart_upload(
+                        Bucket=self._bucket, Key=key, UploadId=upload_id
+                    )
+                except ClientError:
+                    pass
 
     def get(self, key: str) -> bytes:
         from botocore.exceptions import ClientError

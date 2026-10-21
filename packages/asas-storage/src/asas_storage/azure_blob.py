@@ -25,7 +25,8 @@ startup rather than surface on the first upload.
 
 from __future__ import annotations
 
-from typing import Iterator, List, Optional, Tuple
+import base64
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 from .base import (
     FileStat,
@@ -133,6 +134,90 @@ class AzureBlobStorage:
         self._container.upload_blob(
             name=key, data=data, overwrite=True, content_settings=settings
         )
+
+    def put_stream(
+        self,
+        key: str,
+        chunks: Iterable[bytes],
+        content_type: Optional[str] = None,
+        *,
+        overwrite: bool = True,
+    ) -> int:
+        """Stage the object a BLOCK at a time, so nothing holds it.
+
+        ``upload_blob(<iterator>)`` does not stream, and that is the whole
+        reason this is written the long way: handed an iterator with no
+        length the SDK drains it to work out what to send. Measured on a 5 MB
+        upload, the Python heap peaked at 9.1 MB against 2.2 MB for the block
+        form, and passing ``length`` plus ``max_concurrency=1`` makes it
+        WORSE (10.1 MB). Do not "simplify" this back to one call.
+
+        A single-chunk object being OVERWRITTEN skips the block dance: it is
+        already in hand, and one PUT is one round trip against the two that
+        staging plus committing costs, which matters when a batch is fifty
+        small files. A refused-if-taken upload always stages, because the
+        single PUT's ``If-None-Match: *`` counts a blob that holds only
+        uncommitted blocks (a transfer that failed earlier under the same
+        key) as existing, on the emulator and so possibly on the service,
+        while a Put Block List with the same condition does not.
+        Uncommitted blocks are never visible and Azure garbage-collects them
+        after a week, so a transfer that fails part-way leaves no partial
+        object under the key and nothing to clean up.
+        """
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceExistsError, ResourceModifiedError
+        from azure.storage.blob import BlobBlock, ContentSettings
+
+        if not valid_key(key):
+            raise ValueError(f"Invalid storage key: {key!r}")
+        content_type = _clean_content_type(content_type)
+        settings = ContentSettings(content_type=content_type) if content_type else None
+        blob = self._container.get_blob_client(key)
+        # The create-if-absent guard for the block path: commit only if the
+        # blob does not already exist, which is what overwrite=False means
+        # for the single PUT. IfMissing is If-None-Match: *, which needs no
+        # etag; passing one is a TypeError out of the transport, not a 412.
+        guard = {} if overwrite else {"match_condition": MatchConditions.IfMissing}
+
+        block_ids: List[str] = []
+        pending: Optional[bytes] = None
+        written = 0
+        for chunk in chunks:
+            if not chunk:
+                continue
+            written += len(chunk)
+            if pending is None and not block_ids:
+                # Hold the first chunk back: most objects are one chunk, and
+                # those never need a block list at all.
+                pending = chunk
+                continue
+            if pending is not None:
+                self._stage(blob, pending, block_ids)
+                pending = None
+            self._stage(blob, chunk, block_ids)
+        try:
+            if overwrite and not block_ids:
+                blob.upload_blob(pending or b"", overwrite=True, content_settings=settings)
+            else:
+                if pending is not None or not block_ids:
+                    self._stage(blob, pending or b"", block_ids)
+                blob.commit_block_list(
+                    [BlobBlock(block_id=b) for b in block_ids],
+                    content_settings=settings,
+                    **guard,
+                )
+        except (ResourceExistsError, ResourceModifiedError) as exc:
+            raise FileExistsError(key) from exc
+        return written
+
+    @staticmethod
+    def _stage(blob, chunk: bytes, block_ids: List[str]) -> None:
+        """Stage one block and remember its id. Block ids must be base64 and
+        the SAME LENGTH for every block in a blob, which is why this is a
+        zero-padded counter rather than anything derived from the content."""
+        block_id = base64.b64encode(f"{len(block_ids):032d}".encode()).decode()
+        blob.stage_block(block_id, chunk)
+        block_ids.append(block_id)
 
     def _download(self, key: str):
         """Single GetBlob returning the SDK downloader (properties + stream)."""

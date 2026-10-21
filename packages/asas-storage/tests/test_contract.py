@@ -10,6 +10,12 @@ import pytest
 
 from asas_storage import AzureBlobStorage, LocalStorage, S3Storage, safe_filename
 
+
+def unicode_filename(name, **kw):
+    """``safe_filename`` with the opt-in Unicode charset."""
+    return safe_filename(name, ascii_only=False, **kw)
+
+
 # Azurite's well-known emulator account — a published fixed credential, not a
 # secret. CI runs Azurite as a service container; locally the azure leg skips
 # unless you have one listening.
@@ -189,18 +195,34 @@ def test_safe_filename_flattens_exotic_characters():
     """Supabase's S3 layer 400s on keys with e.g. U+202F (macOS screenshot
     names) — safe_filename flattens anything outside the safe charset."""
     assert (
-        safe_filename("Screenshot 2025-08-11 at 4.26.18\u202fPM.png")
+        unicode_filename("Screenshot 2025-08-11 at 4.26.18\u202fPM.png")
         == "Screenshot 2025-08-11 at 4.26.18_PM.png"
     )
-    assert safe_filename("Deep Research (v2).docx") == "Deep Research (v2).docx"
+    assert unicode_filename("Deep Research (v2).docx") == "Deep Research (v2).docx"
+    # ASCII is the default (it is the one charset every backend accepts);
+    # letters in any script are kept only when the host opts in.
     assert safe_filename("données_2025.csv") == "donn_es_2025.csv"
-    assert safe_filename("\u202f") == "_"  # a lone exotic char still yields a key
-    assert safe_filename("") == "file"  # empty basename -> placeholder
+    assert unicode_filename("données_2025.csv") == "données_2025.csv"
+    assert unicode_filename("\u202f") == "_"  # a lone exotic char still yields a key
+    assert unicode_filename("") == "file"  # empty basename -> placeholder
     # "." survives the charset filter \u2014 a file named "." or ".." must not
     # come back as a segment valid_key rejects.
-    assert safe_filename(".") == "file"
-    assert safe_filename("..") == "file"
-    assert safe_filename(" .. ") == "file"
+    assert unicode_filename(".") == "file"
+    assert unicode_filename("..") == "file"
+    assert unicode_filename(" .. ") == "file"
+
+
+def test_arabic_filename_key_round_trips(store):
+    """A key built by safe_filename from an Arabic name behaves like any other
+    on every backend: put, get, stat, list, delete (opt-in Unicode keys, 0.15.1)."""
+    key = f"orgs/1/documents/{uuid.uuid4()}-{unicode_filename('السيرة الذاتية.pdf')}"
+    assert key.endswith("-السيرة الذاتية.pdf")
+    store.put(key, b"%PDF", content_type="application/pdf")
+    assert store.get(key) == b"%PDF"
+    assert store.stat(key).size == 4
+    assert list(store.list("orgs/1/documents")) == [key]
+    store.delete(key)
+    assert not store.exists(key)
 
 
 def test_fetch_range_serves_http_range_semantics(store):

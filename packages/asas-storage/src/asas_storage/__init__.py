@@ -34,7 +34,7 @@ from .base import FileStat, RangeNotSatisfiable, Storage, safe_filename, valid_k
 from .local import LocalStorage
 from .s3 import S3Storage
 
-__version__ = "0.15.0"
+__version__ = "0.15.1"
 
 __all__ = [
     "AzureBlobStorage",

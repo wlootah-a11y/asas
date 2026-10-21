@@ -9,7 +9,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import BinaryIO, Iterator, Optional, Tuple
+from typing import BinaryIO, Iterable, Iterator, Optional, Tuple
 
 from .base import FileStat, RangeNotSatisfiable, valid_key
 
@@ -52,6 +52,50 @@ class LocalStorage:
             except (FileNotFoundError, NotADirectoryError, FileExistsError) as exc:
                 last_exc = exc
                 tmp.unlink(missing_ok=True)
+        raise last_exc  # a real filesystem problem, not the prune race
+
+    def put_stream(
+        self,
+        key: str,
+        chunks: Iterable[bytes],
+        content_type: Optional[str] = None,
+        *,
+        overwrite: bool = True,
+    ) -> int:
+        full = self._full(key)
+        if full is None:
+            raise ValueError(f"Invalid storage key: {key!r}")
+        # Overwriting: the same write-then-rename as put(), one chunk at a
+        # time. Refusing: "xb" IS the collision guard, and it is atomic; an
+        # exists() check would leave a race a streamed upload holds open for
+        # the whole transfer. Either way a transfer that fails part-way
+        # unlinks what it wrote, so no truncated object sits under a key
+        # that now looks taken.
+        last_exc: OSError | None = None
+        for _ in range(_PUT_ATTEMPTS):
+            target = full if not overwrite else full.parent / f".{full.name}.{uuid.uuid4().hex}.tmp"
+            try:
+                full.parent.mkdir(parents=True, exist_ok=True)
+                handle = target.open("xb")
+            except FileExistsError:
+                if not overwrite:
+                    raise
+                continue  # a temp name collision: pick another
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                last_exc = exc
+                continue
+            written = 0
+            try:
+                with handle:
+                    for chunk in chunks:
+                        handle.write(chunk)
+                        written += len(chunk)
+                if overwrite:
+                    os.replace(target, full)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
+            return written
         raise last_exc  # a real filesystem problem, not the prune race
 
     def get(self, key: str) -> bytes:
