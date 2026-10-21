@@ -5,6 +5,10 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.7 (unreleased)
+
+- The offline fallback pins move with the migrate-message fix: `asas-access` to `v0.15.1`, `asas-audit` to `v0.1.1`, `asas-jobs` to `v0.11.2`, `asas-lookups` to `v0.13.4`, `asas-notifications` to `v0.20.1`, `asas-search` to `v0.11.2`, `asas-workflow` to `v0.11.4`.
+
 ## 0.1.6 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.3.0`, the release that

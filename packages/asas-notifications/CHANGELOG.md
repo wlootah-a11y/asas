@@ -5,6 +5,13 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.20.1 (unreleased)
+
+- Fix: the `migrate()` refusal for a PARTIALLY renamed sentinel table now
+  prints its values (which pairs moved and which did not). The f-string's
+  placeholders were doubled, so an operator read `{sorted(renamed)}`
+  literally instead of the pair that moved.
+
 ## 0.20.0 (unreleased)
 
 ### The opaque-identity line joins main

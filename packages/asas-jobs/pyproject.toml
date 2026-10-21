@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asas-jobs"
-version = "0.11.1"
+version = "0.11.2"
 description = "Asas background-jobs module: a durable DB-backed job queue and interval scheduler with CAS claims, lease-based crash recovery, retry backoff with dead-lettering, and a package-owned Alembic chain."
 readme = "README.md"
 requires-python = ">=3.11"

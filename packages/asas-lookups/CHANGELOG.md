@@ -5,6 +5,13 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.13.4 (unreleased)
+
+- Fix: the `migrate()` refusal for a PARTIALLY renamed sentinel table now
+  prints its values (which pairs moved and which did not). The f-string's
+  placeholders were doubled, so an operator read `{sorted(renamed)}`
+  literally instead of the pair that moved.
+
 ## 0.13.3 — 2026-10-02
 
 - **Requires `sqlmodel<0.0.45`.** From 0.0.45, SQLModel's `DateTime` refuses a

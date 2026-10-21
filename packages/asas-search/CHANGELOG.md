@@ -1,9 +1,16 @@
 # Changelog — `asas-search`
 
-Versions follow semver, and the git tag matches this file: `asas-search/v0.11.1`.
+Versions follow semver, and the git tag matches this file: `asas-search/v0.11.2`.
 Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
+
+## 0.11.2 (unreleased)
+
+- Fix: the `migrate()` refusal for a PARTIALLY renamed sentinel table now
+  prints its values (which pairs moved and which did not). The f-string's
+  placeholders were doubled, so an operator read `{sorted(renamed)}`
+  literally instead of the pair that moved.
 
 ## 0.11.1 — 2026-08-27
 

@@ -278,8 +278,16 @@ def test_half_renamed_table_is_refused_before_the_stamp(engine):
     with engine.begin() as conn:
         conn.execute(sa.text(f"DROP TABLE {VERSION_TABLE}"))
         conn.execute(sa.text("ALTER TABLE notification RENAME COLUMN kind TO action"))
-    with pytest.raises(RuntimeError, match="PARTIALLY renamed"):
+    with pytest.raises(RuntimeError, match="PARTIALLY renamed") as raised:
         asas_notifications.migrate(engine)
+    # The message must carry the VALUES: it is the one place an operator learns
+    # which pair moved. It used to print the placeholders literally, and a
+    # match on the phrase alone could not tell.
+    message = str(raised.value)
+    assert "'notification'" in message
+    assert "[('kind', 'action')] moved" in message
+    assert "[('urgency', 'importance')] did not" in message
+    assert "{" not in message
 
 
 def test_downgrade_0004_backfills_null_actions(engine):

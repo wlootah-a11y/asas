@@ -1,9 +1,16 @@
 # Changelog — `asas-audit`
 
-Versions follow semver, and the git tag matches this file: `asas-audit/v0.1.0`.
+Versions follow semver, and the git tag matches this file: `asas-audit/v0.1.1`.
 Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
+
+## 0.1.1 (unreleased)
+
+- Fix: the `migrate()` refusal for a PARTIALLY renamed sentinel table now
+  prints its values (which pairs moved and which did not). The f-string's
+  placeholders were doubled, so an operator read `{sorted(renamed)}`
+  literally instead of the pair that moved.
 
 ## 0.1.0 — unreleased
 

@@ -26,22 +26,22 @@ _TAG_RE = re.compile(r"refs/tags/([a-z0-9-]+)/(v\d+\.\d+\.\d+)$")
 # a tag that's no longer that package's newest. An explicit --version always
 # wins over both this and live discovery.
 FALLBACK_TAGS: dict[str, str] = {
-    "asas-access": "v0.15.0",
+    "asas-access": "v0.15.1",
     "asas-agent": "v0.3.0",
-    "asas-audit": "v0.1.0",
+    "asas-audit": "v0.1.1",
     "asas-graph": "v0.1.0",
-    "asas-jobs": "v0.11.1",
+    "asas-jobs": "v0.11.2",
     "asas-llm": "v0.1.0",
-    "asas-lookups": "v0.13.3",
+    "asas-lookups": "v0.13.4",
     "asas-mcp": "v0.11.1",
-    "asas-notifications": "v0.20.0",
+    "asas-notifications": "v0.20.1",
     "asas-oracle": "v0.1.1",
     "asas-ratelimit": "v0.11.0",
-    "asas-search": "v0.11.1",
+    "asas-search": "v0.11.2",
     "asas-storage": "v0.15.0",
     "asas-tenancy": "v0.1.0",
     "asas-validation": "v0.12.0",
-    "asas-workflow": "v0.11.3",
+    "asas-workflow": "v0.11.4",
 }
 
 

@@ -49,7 +49,7 @@ from asas_audit.models import AuditEvent
 from asas_audit.router import build_router
 from asas_audit.service import append, history, verify
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "append",
