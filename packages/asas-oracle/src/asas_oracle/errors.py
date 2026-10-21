@@ -9,6 +9,8 @@ verb and the path are enough to act on.
 
 from __future__ import annotations
 
+import re
+
 
 class OracleError(Exception):
     """Base class for everything this package raises."""
@@ -206,3 +208,22 @@ def transport_detail(exc: BaseException) -> str:
     """
     words = str(exc).strip() or str(exc.__cause__ or "").strip() or "no message"
     return f"{type(exc).__name__}: {words}"
+
+
+#: Fusion's wording for a value it will not take, with the field's own label:
+#: "You need to enter a valid value for the Candidate Selection Process field."
+_REFUSED_FIELD = re.compile(r"valid value for the (.+?) field", re.IGNORECASE)
+
+
+def refused_fields(body: str) -> list[str]:
+    """The field LABELS a Fusion validation refusal names, in order, each once.
+
+    Labels only, never the message: the prose can carry tenant detail, the
+    label is what a host can act on (``["Candidate Selection Process",
+    "External Application Flow"]``). ``[]`` for a refusal that names none."""
+    seen: list[str] = []
+    for match in _REFUSED_FIELD.finditer(" ".join((body or "").split())):
+        label = match.group(1).strip()
+        if label and label not in seen:
+            seen.append(label[:80])
+    return seen[:10]

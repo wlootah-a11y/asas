@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asas-oracle"
-version = "0.1.1"
+version = "0.2.0"
 description = "Asas Oracle Fusion HCM module: an async REST client for Oracle Fusion with typed errors, the query grammar's traps written down, a pluggable read cache, and id-to-name lookups (grades, departments, business units, jobs, positions, people) that respect what the instance will actually answer."
 readme = "README.md"
 requires-python = ">=3.11"

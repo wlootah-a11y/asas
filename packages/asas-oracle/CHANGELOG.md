@@ -5,6 +5,34 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.2.0 (unreleased)
+
+Reads and helpers a host had grown beside the client, none of them about any
+product:
+
+- **`common_lookup`, `installed_languages` and `fscm_path`.** Some of an
+  instance's reference lists live under `fscmRestApi`, not `hcmRestApi`, on the
+  same host with the same credentials; the `hcmRestApi` path 404s, which reads
+  as "no such list". `fscm_path` makes the hop (`None` behind a gateway, where
+  no such route exists, so the reads answer `[]` rather than guess).
+  `common_lookup` reads one `commonLookupsLOV` lookup, paged. `installed_languages`
+  reads `languagesLOV` and keeps the base and installed, active languages: on
+  one measured instance two of 37, against the 39 of `PER_CORRESP_LANG`, which
+  lists every language Fusion can correspond in and not the ones a record can
+  be published in.
+- **`stored_of` and `differences`.** What Oracle's answer to a create or a PATCH
+  holds against what was sent: a field can be defaulted or overridden by the
+  instance's own configuration with a 200 all the same. A missing or empty
+  echo is unknown, never a difference.
+- **`refused_fields`.** The field LABELS a Fusion validation refusal names
+  ("valid value for the Candidate Selection Process field"), labels only, so a
+  host can act on it without the prose, which never leaves the exception.
+- **`person_id_for_address`.** The `PersonId` behind an address through its user
+  account, by the same spellings as `find_account` (suffixed first on a
+  scrubbing pod), asked at once.
+- **`worker_address(row, suffix="")`** takes the scrubbing pod's suffix off a
+  `Username` fallback, so the address matches an account on the host's side.
+
 ## 0.1.1 (unreleased)
 
 - **Fusion's lifecycle refusals are their own classes.** `OracleStateRefusedError`

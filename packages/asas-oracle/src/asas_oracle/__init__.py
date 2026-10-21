@@ -74,7 +74,9 @@ from .cache import (
 )
 from .check import REFERENCE_PROBES, CheckResult, Probe, check, load_manifest
 from .client import MAX_PAGE_SIZE, CollectionPage, OracleFusionClient
+from .echo import differences, stored_of
 from .errors import (
+    refused_fields,
     OracleAlreadyExistsError,
     OracleAuthError,
     OracleConfigError,
@@ -121,12 +123,14 @@ from .attachments import (
     enclosure_key,
 )
 from .accounts import (
+    person_id_for_address,
     SCRUBBED_EMAIL,
     USER_ACCOUNTS,
     find_account,
     holds_any_role,
     usernames_for,
 )
+from .reference import INSTALLED_FLAGS, LANGUAGES_RESOURCE, common_lookup, fscm_path, installed_languages
 from .routing import GATEWAY_MARKER, Route, is_gateway, misroute
 from .settings import OracleSettings
 from .store import LookupStore, MemoryLookupStore, StoredAnswer
@@ -150,9 +154,18 @@ from .upstream import (
 #: served to a v2 reader.
 REST_FRAMEWORK_V2: dict[str, str] = {"REST-Framework-Version": "2"}
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
+    "INSTALLED_FLAGS",
+    "LANGUAGES_RESOURCE",
+    "common_lookup",
+    "differences",
+    "fscm_path",
+    "installed_languages",
+    "person_id_for_address",
+    "refused_fields",
+    "stored_of",
     "ApiKeyAuth",
     "Auth",
     "BasicAuth",

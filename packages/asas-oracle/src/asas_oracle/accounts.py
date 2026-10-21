@@ -75,6 +75,38 @@ def usernames_for(address: str, suffix: str = "") -> list[str]:
     return list(dict.fromkeys([f"{address}{suffix}", f"{address.lower()}{suffix}", *plain]))
 
 
+async def person_id_for_address(client: Any, address: str, suffix: str = "") -> str:
+    """The ``PersonId`` of the person whose user account is under ``address``,
+    or ``""``.
+
+    The same spellings as :func:`find_account` (the suffixed ones first on a
+    scrubbing pod), asked AT ONCE, the first hit in priority order winning. The
+    reverse of the directory hop (a person to an address): it is what lets a
+    host name the right person on a record it writes. A failure on a spelling
+    ranked above the hit fails the lookup, for :func:`find_account`'s reason."""
+    address = (address or "").strip()
+    if not address:
+        return ""
+
+    async def ask(username: str) -> str:
+        rows, _, _ = await client.get_collection(
+            USER_ACCOUNTS,
+            {"q": eq("Username", username, strip_quotes=True), "fields": "PersonId", "limit": 1},
+            use_cache=False,
+        )
+        return str((rows[0] if rows else {}).get("PersonId") or "").strip()
+
+    found = await asyncio.gather(
+        *(ask(name) for name in usernames_for(address, suffix)), return_exceptions=True
+    )
+    for hit in found:
+        if isinstance(hit, BaseException):
+            raise hit
+        if hit:
+            return hit
+    return ""
+
+
 async def find_account(client: Any, address: str, suffix: str = "") -> dict[str, Any] | None:
     """The Oracle user account behind ``address``, or None.
 

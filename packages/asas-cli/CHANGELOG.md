@@ -5,6 +5,12 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.7 (unreleased)
+
+- The offline fallback pin for `asas-oracle` moves to `v0.2.0`, the release that
+  carries the `fscmRestApi` reference reads, the stored-against-sent comparison,
+  the refused field labels and the person behind an address.
+
 ## 0.1.6 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.3.0`, the release that

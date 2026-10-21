@@ -66,18 +66,24 @@ POSITION_BUDGET_KIND = "position_budget"  # BudgetedPositionFlag, "Y"/"N"/""
 SCRUBBED_WORK_EMAIL = "sendmail-test-discard@oracle.com"
 
 
-def worker_address(row: dict[str, Any]) -> str:
+def worker_address(row: dict[str, Any], suffix: str = "") -> str:
     """The usable email address on a ``/publicWorkers`` row, or ``""``.
 
     ``WorkEmail`` first, ``Username`` second. On a non-production pod the first
     is scrubbed and ``Username`` still carries the real address, so the
     fallback is what makes a test instance usable, and the order is what keeps
     production correct. A ``Username`` without an ``@`` is a login name, not an
-    address."""
+    address.
+
+    ``suffix`` is the text such a pod appends after the domain
+    (``jane@x.ae123``): taken OFF, or the address never matches an account on
+    the host's side. Only when what remains is still an address."""
     work = text(row, "WorkEmail").strip()
     if work and work.lower() != SCRUBBED_WORK_EMAIL:
         return work
     username = text(row, "Username").strip()
+    if suffix and username.endswith(suffix) and "@" in username[: -len(suffix)]:
+        username = username[: -len(suffix)]
     return username if "@" in username else ""
 
 
