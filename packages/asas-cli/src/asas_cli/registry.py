@@ -157,6 +157,14 @@ _SPECS = [
         "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
         "table-less, router-less (AI tier)",
     ),
+    PackageSpec(
+        "linkedin",
+        "asas-linkedin",
+        "asas_linkedin",
+        "packages/asas-linkedin",
+        "LinkedIn for a hiring product: OpenID Connect sign-in, Apply with LinkedIn, Page posts with a sealed token, the Jobs XML feed.",
+        "table-less, router-less",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

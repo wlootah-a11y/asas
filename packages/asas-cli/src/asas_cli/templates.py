@@ -268,6 +268,31 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "linkedin": BootSnippet(
+        imports=("import functools", "import asas_linkedin"),
+        setup=(
+            "@functools.cache  # ONE client per process: it holds the pool and the cached keys\n"
+            "def linkedin_client() -> asas_linkedin.LinkedInClient:\n"
+            "    # Built even when an app is unset, so a scaffold with LinkedIn off still\n"
+            "    # boots; a call that needs the app then fails as LinkedInUnconfiguredError.\n"
+            "    # Close at shutdown: await linkedin_client().aclose() in your lifespan hook.\n"
+            "    return asas_linkedin.LinkedInClient(asas_linkedin.LinkedInSettings(\n"
+            "        sign_in=asas_linkedin.AppCredentials(\n"
+            "            settings.linkedin_client_id, settings.linkedin_client_secret,\n"
+            "            settings.linkedin_callback_url,  # exactly as registered on the app\n"
+            "        ),\n"
+            "    ))",
+            "# url = await linkedin_client().authorization_url(app=linkedin_client().sign_in_app(), state=state)  "
+            "# TODO: send the browser there, keep `state` for the callback",
+            "# member = await linkedin_client().sign_in(code=code)  "
+            "# TODO: on the callback; member.sub is the stable key for a returning person",
+        ),
+        settings_fields=(
+            ("linkedin_client_id", "str", '""'),
+            ("linkedin_client_secret", "str", '""'),
+            ("linkedin_callback_url", "str", '""'),
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(
