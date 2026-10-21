@@ -19,6 +19,7 @@ EXPECTED_KEYS = {
     "graph",
     "llm",
     "agent",
+    "cv",
 }
 
 

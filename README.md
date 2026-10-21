@@ -90,6 +90,7 @@ Every Asas package holds to the same twelve principles, in no particular order:
 | `asas-graph` | `asas_graph` | table-less, router-less (Microsoft Graph client, Teams meetings) |
 | `asas-llm` | `asas_llm` | table-less, router-less (prompts, tracing, structured output) |
 | `asas-agent` | `asas_agent` | table-less, router-less (agent releases, skills, run contracts, evals; no Temporal) |
+| `asas-cv` | `asas_cv` | table-less, router-less (CV text, headshot and parsed shape) |
 | `asas-cli` | `asas_cli` | tooling |
 
 Packages version independently; the current version of each lives in its
