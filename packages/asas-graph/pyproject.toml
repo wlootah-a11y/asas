@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asas-graph"
-version = "0.1.0"
+version = "0.1.1"
 description = "Asas Microsoft Graph module: an app-only (client-credentials) Graph client with typed errors and the certificate trust-store problem solved, plus create/reschedule/cancel of Teams meetings on an organiser's calendar."
 readme = "README.md"
 requires-python = ">=3.11"

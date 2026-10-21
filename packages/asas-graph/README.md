@@ -110,6 +110,93 @@ plugs in at this seam and nothing here changes.
   `MeetingCancelError` (all `MeetingError`), with the `GraphRequestError` as
   `__cause__`.
 
+## Free/busy
+
+`FreeBusyReader(client, mailbox)` reads free/busy over Graph `getSchedule`
+(`POST /users/{mailbox}/calendar/getSchedule`). `mailbox` is the user the call
+runs under: app-only there is no `/me`, so any licensed mailbox the
+permission covers will do, typically the same service mailbox that organises
+meetings. The `Calendars.ReadWrite` application permission the meetings
+already need covers it, working hours included (proven on a live tenant by the
+engine); `MailboxSettings.Read` is not needed. Microsoft lists lower read-only
+calendar permissions for `getSchedule` too; they are untested here. `findMeetingTimes` is not used
+because it has no application-permission form.
+
+```python
+reader = asas_graph.FreeBusyReader(graph, mailbox="meetings@example.gov")
+schedules = await reader.get_schedule(
+    ["chen.wei@example.com", "sara@example.com"],
+    start, end,                     # timezone-aware; sent to Graph in UTC
+    interval_minutes=60,            # availabilityViewInterval, 5..1440
+)
+for s in schedules:                 # one per requested address, in your order
+    s.mailbox, s.readable, s.busy, s.working_hours, s.error
+```
+
+It reads fail-closed, which is what the engine it came from learned on a live
+tenant:
+
+- **Batching.** Graph refuses more than 100 addresses per request
+  (`ErrorMailboxDataArrayTooBig`). Longer lists are split into batches of
+  `max_per_request` (default and maximum 100), sent one after another.
+  Addresses are matched case-insensitively (Graph echoes the mailbox's own
+  casing as `scheduleId`) and a repeated address is sent once.
+- **Per-mailbox errors do not fail the call.** An `error` entry, an address
+  Graph leaves out, or a mailbox that shares availability but withholds the
+  intervals behind it comes back as `readable=False` with one `unknown`
+  interval over the whole window and the reason in `error`. A caller that
+  ignores the flag still cannot book it.
+- **Whole-request errors raise `FreeBusyError`**, with the
+  `GraphRequestError` (or the transport error) as `__cause__` and
+  `is_transient` set for throttling, 5xx and dropped connections. With
+  several batches the answer is all or nothing.
+- **Statuses.** `FreeBusyStatus` is `free`, `tentative`, `busy`, `oof`,
+  `workingElsewhere`, `unknown`. Everything but `free` is in `busy`. A status
+  outside that set raises `UnmappedFreeBusyStatusError`, never reads as free.
+- **Time zones.** The window goes out in UTC and the answer is read as UTC;
+  an answer labelled with any other zone raises rather than being shifted
+  silently. `BusyInterval.start/end` are aware UTC datetimes. Working hours
+  keep the zone Graph names, which is a **Windows** id such as
+  `Arabian Standard Time`; `WorkingHours.zone()` (and `resolve_time_zone`)
+  resolves IANA and common Windows names, `None` for anything else. Hours
+  missing days or a zone read as `None` rather than half-filled.
+- The `availabilityView` string is kept as `availability_view`, but the
+  intervals are authoritative: Graph writes `workingElsewhere` as `0` (free)
+  in the view. Subjects and locations in `scheduleItems` are never read.
+
+## Common free slots
+
+`SlotFinder` turns schedules into candidate slots, deterministically: exact
+interval arithmetic, no clock read, no model call, same input same output.
+
+```python
+finder = asas_graph.SlotFinder(
+    step=timedelta(minutes=15),                  # the grid
+    default_working_hours=asas_graph.WorkingHours(
+        ("sunday", "monday", "tuesday", "wednesday", "thursday"),
+        time(8), time(16), "Asia/Dubai"),        # for mailboxes that expose none
+)
+slots = finder.find(schedules, start, end, timedelta(minutes=45),
+                    limit=4, non_overlapping=True)
+```
+
+A slot is returned when every schedule passed in is free for all of it:
+every non-free interval blocks (`tentative` and `unknown` included, so an
+unreadable mailbox blocks everything), and so does time outside each
+mailbox's working hours, read in that mailbox's own zone (overnight shifts
+included). A mailbox's own hours apply where usable, else
+`default_working_hours`, else only the window bounds it;
+`use_mailbox_hours=False` applies the default to everyone. The grid is
+anchored to local midnight of `start` in `start`'s own zone, so a 15-minute
+step on a `+04:00` window lands on :00/:15/:30/:45 Dubai time. Slots come back
+earliest first, in UTC; `non_overlapping=True` drops a slot that overlaps one
+already returned.
+
+It does not **rank**. Which free slot to offer first (preferred windows,
+diary fragmentation, busy optional attendees, notice periods, holidays) is
+product policy and stays in the host. Pass only the mailboxes that must be
+free; check optional ones against the returned slots yourself.
+
 ## Errors
 
 ```

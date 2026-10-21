@@ -29,6 +29,8 @@ from __future__ import annotations
 from .auth import ClientCredentialTokenProvider, StaticTokenProvider, TokenProvider
 from .client import GraphClient, default_ssl_context
 from .errors import (
+    FreeBusyError,
+    UnmappedFreeBusyStatusError,
     GraphAuthError,
     GraphConfigError,
     GraphError,
@@ -38,28 +40,47 @@ from .errors import (
     MeetingError,
     MeetingUpdateError,
 )
+from .free_busy import (
+    BusyInterval,
+    FreeBusyReader,
+    FreeBusyStatus,
+    MailboxSchedule,
+    WorkingHours,
+    resolve_time_zone,
+)
 from .meetings import Attendee, Meeting, TeamsMeetings
+from .slots import Slot, SlotFinder
 from .settings import GraphSettings
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "Attendee",
+    "BusyInterval",
     "ClientCredentialTokenProvider",
+    "FreeBusyError",
+    "FreeBusyReader",
+    "FreeBusyStatus",
     "GraphAuthError",
     "GraphClient",
     "GraphConfigError",
     "GraphError",
     "GraphRequestError",
     "GraphSettings",
+    "MailboxSchedule",
     "Meeting",
     "MeetingCancelError",
     "MeetingCreationError",
     "MeetingError",
     "MeetingUpdateError",
+    "Slot",
+    "SlotFinder",
     "StaticTokenProvider",
     "TeamsMeetings",
     "TokenProvider",
+    "UnmappedFreeBusyStatusError",
+    "WorkingHours",
     "default_ssl_context",
+    "resolve_time_zone",
     "__version__",
 ]

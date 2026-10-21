@@ -5,6 +5,11 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.7 (unreleased)
+
+- The offline fallback pin for `asas-graph` moves to `v0.1.1`, the release
+  that carries free/busy and the slot finder.
+
 ## 0.1.6 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.3.0`, the release that

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 # Status codes on which a retry has a reasonable chance of succeeding.
 _TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
 
@@ -129,3 +131,41 @@ class MeetingUpdateError(MeetingError):
 
 class MeetingCancelError(MeetingError):
     operation = "cancel"
+
+
+class FreeBusyError(GraphError):
+    """Free/busy could not be read for the request as a whole.
+
+    One unreadable *mailbox* is not this error: it comes back as a
+    :class:`~asas_graph.MailboxSchedule` with ``readable=False``. This is the
+    whole call failing (Graph answered 4xx/5xx, the connection dropped, or
+    the answer was in a shape that cannot be read safely). The transport
+    error, when there was one, is chained as ``__cause__``.
+    """
+
+    def __init__(self, reason: str, detail: Any = None) -> None:
+        self.reason = reason
+        super().__init__(f"Failed to read free/busy: {reason}", detail=detail)
+
+    @property
+    def is_transient(self) -> bool:
+        """Worth retrying: the chained cause was a throttle, a 5xx the
+        :class:`GraphRequestError` calls transient, or a transport failure."""
+        cause = self.__cause__
+        if isinstance(cause, GraphRequestError):
+            return cause.is_transient
+        # No Graph answer at all (timeout, DNS, TLS) is transient; a malformed
+        # answer or an unmapped status is not.
+        return isinstance(cause, httpx.TransportError)
+
+
+class UnmappedFreeBusyStatusError(FreeBusyError):
+    """Graph sent a ``scheduleItems[].status`` this library does not know.
+
+    Never resolved by treating the interval as free: a value Graph adds later
+    must not read as an open calendar.
+    """
+
+    def __init__(self, status: Any) -> None:
+        self.status = status
+        super().__init__(f"unmapped Graph free/busy status {status!r}", detail=status)
