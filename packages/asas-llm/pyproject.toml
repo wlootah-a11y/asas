@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "asas-llm"
 version = "0.1.0"
-description = "Asas LLM module: prompts as data served registry-first with a last-good copy and a shipped local fallback, every model call traced and grouped per request with the trace id handed back, and strict-then-repair structured output from pydantic models."
+description = "Asas LLM module: prompts as data served registry-first with a last-good copy and a shipped local fallback, every model call traced and grouped per request with the trace id handed back, strict-then-repair structured output from pydantic models, and the gateway layers in front of every call: the prompt and response guard with Azure AI Content Safety, deployment-wide admission with lanes, per-call provenance, per-call model overrides and output caps, trace masking, and single-call evals."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -37,11 +37,18 @@ langchain = [
 openai = [
     "langchain-openai>=0.3",
 ]
+# The Azure AI Content Safety scanner (asas_llm.content_safety) speaks HTTP
+# itself; Entra sign-in needs azure-identity on top, which the host installs.
+guard = [
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=0.23",
     "httpx>=0.27",
     "starlette>=0.37",
     "langchain-core>=0.3",
+    "langchain-openai>=0.3",
     "langfuse>=2.50,<3",
 ]
 

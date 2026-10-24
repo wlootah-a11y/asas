@@ -6,7 +6,12 @@ replica that cannot reach the registry still answers. Every call is traced,
 every trace is grouped under the request that made it, and the trace id is
 handed back on the result, on the error and on the response header. Structured
 output is asked for strictly, repaired before parsing, and fails with the raw
-text attached rather than with a bare `None`.
+text attached rather than with a bare `None`. And the gateway layers every AI
+product ends up building in front of its calls, done once: a prompt and
+response **guard** (built-in rules plus Azure AI Content Safety), one
+**admission** cap on requests in flight across every process, **provenance**
+on every stored output, per-call **model overrides and output caps**, trace
+**masking**, and single-call **evals**.
 
 ```python
 import asas_llm
@@ -56,7 +61,17 @@ package of the **AI tier**: it owns no tables and calls a model instead.
 | `structured` | Strict schema in, repaired-and-validated object out. |
 | `runners` | The LangChain runner and the two model factories. |
 | `langfuse` | The Langfuse `PromptStore` and `Tracer`, plus the LangChain 1.x shim. |
-| `errors` | Typed failures, each carrying its trace id. |
+| `errors` | Typed failures, each carrying its trace id; `busy_cause` and `refusal_cause`. |
+| `guard` | Every chat completion inspected before it is sent and before its answer is used; `guarded(ChatOpenAI, ...)`. |
+| `rules` | The built-in prompt-injection and unsafe-answer rules. No model, no network. |
+| `content_safety` | The `ContentScanner` seam and Azure AI Content Safety behind it. |
+| `admission` | One cap on model requests in flight across every process, with an interactive lane bulk gives way to. |
+| `slots` | The Redis-backed `WideSemaphore` under admission (and anything else with a quota). |
+| `provenance` | Which prompt version, model and trace made each stored output; `recording()`. |
+| `overrides` | The model a call runs on, its output cap and the approved models, by call name, live. |
+| `masking` | Untrusted text kept out of the trace store by key prefix. |
+| `callbacks` | The output-cap logger the runner attaches. |
+| `evals` | One prompt replayed over recorded cases, checked, judged and counted. |
 
 ## Installing
 
@@ -70,8 +85,12 @@ on use, and a module that needs one names it when it is missing:
 | Extra | Pulls in | Needed for |
 | --- | --- | --- |
 | `langfuse` | `langfuse>=2.50,<3` | `asas_llm.langfuse` (registry, tracer, snapshot CLI) |
-| `langchain` | `langchain-core>=0.3` | `asas_llm.runners` |
+| `langchain` | `langchain-core>=0.3` | `asas_llm.runners`, `asas_llm.callbacks`, `guarded(...)` |
 | `openai` | `langchain-openai>=0.3` | the `openai_compatible` / `azure_openai` factories |
+| `guard` | `httpx>=0.27` | `asas_llm.content_safety.AzureContentSafety` (Entra sign-in needs `azure-identity` too) |
+
+`asas_llm.slots` and `asas_llm.admission` import no Redis client: the host
+passes a callable returning one (the `redis` package's asyncio client).
 
 ## Six things this encodes that are easy to get wrong
 
@@ -181,6 +200,128 @@ walker the OpenAI SDK ships privately, so the package does not import `openai`
 for a schema transform. Providers that reject `response_format` run with
 `strict=False` and rely on repair plus validation.
 
+## The gateway layers
+
+Each layer is a seam the host fills from its own settings. A setting may be
+passed as a value or as a zero-argument callable, so a host whose settings
+object is live (reloaded, or patched in a test) is read on every call without
+the package knowing how.
+
+### The guard
+
+```python
+from langchain_openai import ChatOpenAI
+from asas_llm import GuardPolicy, AzureContentSafety, guarded, UnsafeContent
+
+scanner = AzureContentSafety(endpoint=lambda: cfg.CS_ENDPOINT, key=lambda: cfg.CS_KEY,
+                             fail_mode="open", severity_threshold=4)
+policy = GuardPolicy(prompt_mode=lambda: cfg.GUARD_PROMPT_MODE,     # off | monitor | enforce
+                     response_mode=lambda: cfg.GUARD_RESPONSE_MODE,
+                     scanner=scanner)
+GuardedChatOpenAI = guarded(ChatOpenAI, policy=policy, admission=admission.slot,
+                            outbound_headers=lambda: {"X-Correlation-ID": correlation_id()})
+factory = openai_compatible(api_key=..., base_url=..., client_class=GuardedChatOpenAI)
+```
+
+LangChain sends every chat completion through one of four methods, and a
+structured-output or tool-bound model is the same client underneath, so the
+guarded class sees every request and every answer whichever agent made it.
+Before the request: the built-in rules (`asas_llm.rules`, specific phrasings
+of an override, a match inside quotes not counted, because a product's own
+prompts quote attacks on purpose) plus the scanner on the **untrusted** text.
+The runner marks the template values it fills in as that text; `untrusted_keys`
+narrows it to the inputs that came from outside when the host passes its own
+briefs beside the document. After the answer: the response rules (a
+credential, a chat template token, active HTML, a remote image, the system
+prompt coming back) plus the scanner's harm categories. A finding is logged
+as `ai_guard.finding` with the call's name and the rules, never the text,
+counted in `GUARD_EVENTS`, and under `enforce` raised as `UnsafeContent` (or
+the host's own class, `refusal=`). The runner re-raises a refusal unwrapped,
+so no layer above asks again.
+
+### Admission
+
+```python
+from asas_llm import Admission, lane
+
+admission = Admission(limit=lambda: cfg.GATEWAY_CONCURRENCY,      # 0 is off
+                      interactive_reserve=lambda: cfg.INTERACTIVE_RESERVE,
+                      processes=lambda: cfg.PROCESSES,            # the fallback share
+                      client=redis_client,                        # () -> redis.asyncio client
+                      shares_quota=lambda provider: provider == cfg.LLM_PROVIDER)
+
+with lane("bulk"):                       # inherited by every task the block starts
+    await intake.run()
+async with admission.slot("transcribe", provider="azure"):   # a client off the chat gateway
+    ...
+```
+
+The holders live in a Redis sorted set of leases, taken by one Lua script, so
+two processes can never both see the last slot free; a holder renews its
+lease, so a process killed mid-call frees its slot within thirty seconds. In
+front sits a per-loop semaphore, which is also what remains when Redis is
+unreachable: the process falls back to its share of the limit and the outage
+is logged once. `WideSemaphore` is the primitive on its own, for anything else
+with a quota (a speech recogniser).
+
+### Provenance
+
+```python
+from asas_llm import recording, provenance
+
+with recording() as calls:
+    parsed = await runner.ainvoke("parse-cv", {...}, output_model=ParsedCV)
+made = provenance.of_calls(calls, provenance.identity(parsed.provenance_ref, model))
+stored = {"result": parsed.value.model_dump(), "provenance": made.model_dump()}
+```
+
+Every `LLMResult` carries its `CallProvenance` (the prompt by registry
+version, or by text digest for a cached or local copy, the model after
+overrides, the effort, the trace). `recording()` collects the calls made in a
+block, fan-out tasks included. `identity()` is what, besides the input,
+decides an output; a stored output keeps its digest and a later read knows the
+output is stale without re-reading the inputs.
+
+### Per-call knobs
+
+```python
+asas_llm.configure(..., overrides=ModelOverrides(lambda: cfg.MODEL_OVERRIDES),   # "screening-=gpt-4.1"
+                        output_caps=OutputCaps(lambda: cfg.MAX_TOKENS, lambda: cfg.MAX_TOKENS_DEFAULT),
+                        allowlist=ModelAllowlist(lambda: cfg.ALLOWED_MODELS))
+```
+
+All three match the **call name** by longest prefix. The allowlist is checked
+after the overrides, so neither a code change nor a settings change can route
+a call to an unapproved model, and `ModelNotAllowed` is raised before a client
+exists. A call that stops at its output cap is logged as
+`llm_output_truncated`, which used to be indistinguishable from a model that
+answered badly.
+
+### Masking
+
+```python
+client = make_client(..., mask=mask_prefixed(("screening_",)))
+```
+
+The mask is registered once on the Langfuse client and sees every caller's
+payload, so the caller that needs masking namespaces its keys and the mask
+matches the prefix. It never raises: the trace is an audit requirement.
+
+### Evals
+
+```python
+from asas_llm.evals import EvalCase, Judge, run_cases, cases_from_langfuse
+
+cases = cases_from_langfuse(client, "parse-cv", limit=50)          # inputs from recent traces
+for c in cases: c.criteria = "every role on the CV is listed with its dates"
+report = await run_cases(runner, "parse-cv", cases, output_model=ParsedCV,
+                         judge=Judge(runner, judge_prompt="eval-judge"), attempts=4)
+report.pass_rate; report.failed_checks; report.to_dict()
+```
+
+Runs through the production runner, so the prompt store, the guard and the
+overrides are the real ones. A case passes on every attempt or not at all.
+
 ## Adopting in the AI engine this was extracted from
 
 What exists there today (`base/llm/`, `base/utils/pydantic.py`,
@@ -202,6 +343,12 @@ and where it goes:
 | `SuperAgent` and the tool collectors | stay in the engine | A product orchestration pattern over `agent_ainvoke`; it takes its traced config from `runner.trace`. |
 | `EmbeddingClient` | stays, candidate for `asas_llm.embeddings` later | Different call shape; not needed by any current consumer of the runner. |
 | `LLMRunner` as `SingletonMeta` | `asas_llm.configure` + `runner()` | Same process-wide access, but `set_runner()` lets tests inject a fake model. |
+| `base/llm/gateway/{guard,rules,content_safety,allowlist}.py` | `asas_llm.guard`, `rules`, `content_safety`, `overrides.ModelAllowlist` | The engine keeps a shim per module that builds the policy, the scanner and the guarded client classes from `config`, so every import site and the `GuardedChatOpenAI` name stay. |
+| `base/llm/admission.py`, `base/database/redis/slots.py` | `asas_llm.admission.Admission`, `asas_llm.slots.WideSemaphore` | The engine's `EngineWideSemaphore` is a one-line subclass with its Redis client as the default; keys keep the `engine-slots:` prefix. |
+| `base/llm/provenance.py`, `base/definitions/schema/provenance.py` | `asas_llm.provenance` | Re-exported whole; `PromptRef.source` is a string now, `repo` kept for the engine's repository copies. |
+| `base/utils/output_caps.py`, `model_for` in the runner | `asas_llm.overrides`, `asas_llm.callbacks` | Same `prefix=value` strings, read live from `config`. |
+| `base/llm/masking.py` | `mask_prefixed(("screening_",))` | Same prefix, same marker. |
+| the Langfuse replay-and-judge scripts (scratch) | `asas_llm.evals` | The cases come from the prompt's traces; the judge is a prompt in the store. |
 
 Order of adoption that keeps every step shippable: (1) snapshot the Langfuse
 prompts into `base/data/prompts/` and configure the layered store, which
