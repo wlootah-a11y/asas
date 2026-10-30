@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "asas-cv-profile"
+version = "0.1.0"
+description = "Asas CV profile module: a CV read into a host's profile model, every value citing the numbered lines it came from and checked against them in code. Document Intelligence reads PDFs into lines, an asas-agent release fills the host's sections, and code checks dates, numbers, phones and names, folds a bilingual CV's twins, keeps skills in the CV's words, works out durations with overlaps counted once, and keeps every line no field took."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "asas-agent>=0.4",
+    "asas-cv>=0.1",
+    # imported here directly: the Agents SDK's strict schema, the OpenAI client's errors, and
+    # asas-cv's own readers for PDFs and Word. The floors: the SDK line asas-agent pins and
+    # the client it needs; pdfminer.six and lxml (Word's XML) at the releases that fixed
+    # their advisories (PYSEC-2026-1761 and -1762; PYSEC-2026-87, XXE)
+    "openai-agents>=0.22",
+    "openai>=3.0",
+    "pdfminer.six>=20251230",
+    "python-docx>=1.1",
+    "lxml>=6.1",
+    "pydantic>=2.11,<3",
+    "pyyaml>=6.0",
+    # matching values to their lines: Levenshtein ratios, dates in every Arabic region's
+    # month names and the Hijri calendar, phone numbers as numbers (Arabic letter folding
+    # is CAMeL Tools' character maps, kept in arabic.py: see NOTICE)
+    "rapidfuzz>=3",
+    "dateparser>=1.2",
+    "hijridate>=2.5",
+    "phonenumbers>=8.13",
+    # the key's tokens a minute: a leaky bucket, the prompt counted with the model's tokenizer
+    "aiolimiter>=1.1",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+# Azure Document Intelligence for PDFs: layout, reading order, OCR
+docintel = [
+    "azure-ai-documentintelligence>=1.0",
+    "markdownify>=0.13",
+]
+# the upload page and its router
+serve = [
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "fastapi>=0.110,<1",
+    "python-multipart>=0.0.9",
+    "markdownify>=0.13",
+    "azure-ai-documentintelligence>=1.0",
+]
+
+[project.scripts]
+asas-cv-profile = "asas_cv_profile.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asas_cv_profile"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

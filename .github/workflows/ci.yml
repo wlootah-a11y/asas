@@ -52,9 +52,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [asas-lookups, asas-validation, asas-storage, asas-ratelimit, asas-jobs, asas-access, asas-workflow, asas-notifications, asas-search, asas-mcp, asas-tenancy, asas-audit, asas-oracle, asas-graph, asas-llm, asas-agent]
+        package: [asas-lookups, asas-validation, asas-storage, asas-ratelimit, asas-jobs, asas-access, asas-workflow, asas-notifications, asas-search, asas-mcp, asas-tenancy, asas-audit, asas-oracle, asas-graph, asas-llm, asas-agent, asas-cv, asas-cv-profile]
         engine: [sqlite, postgres]
-        # asas-oracle, asas-graph, asas-llm and asas-agent touch no database (same
+        # asas-oracle, asas-graph, asas-llm, asas-agent, asas-cv and asas-cv-profile touch no database (same
         # rule as asas-cli): one leg each, not an identical suite twice plus an
         # unused postgres service.
         exclude:
@@ -65,6 +65,10 @@ jobs:
           - package: asas-llm
             engine: postgres
           - package: asas-agent
+            engine: postgres
+          - package: asas-cv
+            engine: postgres
+          - package: asas-cv-profile
             engine: postgres
 
     services:
@@ -145,10 +149,14 @@ jobs:
       # and pip's name-only requirement is then already satisfied. This is the
       # same shape a consumer uses, where their own top-level git pin satisfies it.
       # asas-notifications needs it only for its `tenancy` extra, which its
-      # isolation tests exercise.
+      # isolation tests exercise. asas-cv-profile depends on asas-agent and asas-cv the same way.
       - name: Install sibling packages
         if: matrix.package == 'asas-audit' || matrix.package == 'asas-notifications'
         run: pip install -e packages/asas-tenancy
+
+      - name: Install sibling packages (asas-cv-profile)
+        if: matrix.package == 'asas-cv-profile'
+        run: pip install -e packages/asas-agent -e packages/asas-cv
 
       - name: Install package
         working-directory: packages/${{ matrix.package }}

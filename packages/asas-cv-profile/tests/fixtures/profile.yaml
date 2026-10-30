@@ -1,0 +1,104 @@
+# A made-up profile model for the tests: one section of each kind the code knows.
+name: Test profile
+sections:
+  - name: Name
+    group: Identity
+    fields:
+      - {name: Full name, type: string}
+  - name: Contact
+    group: Identity
+    fields:
+      - {name: Email, type: string}
+      - {name: Mobile, type: phone, note: E.164}
+  - name: Headline
+    group: Work experience
+    fields:
+      - {name: About, type: text}
+  - name: Level
+    group: Work experience
+    kind: work_level
+    fields:
+      - {name: Seniority, type: enum, values: [Junior, Senior, Not stated], infer: true}
+  - name: Experience
+    group: Work experience
+    fields:
+      - {name: Total experience (months), type: number, computed: total_months}
+      - {name: Gaps between roles (months), type: number, computed: gap_months}
+      - {name: Government experience (months), type: number, computed: host}
+  - name: Professional
+    group: Work experience
+    kind: work
+    list: true
+    fields:
+      - {name: Job title, type: string}
+      - {name: Company, type: string, role: employer}
+      - {name: Start date, type: date, role: start}
+      - {name: End date, type: date, role: end}
+      - {name: I currently work here, type: boolean, role: current}
+      - {name: Responsibilities, type: text}
+      - {name: Skills used in this role, type: multi_enum, role: skills_used}
+      - {name: Duration (months), type: number, computed: duration_months}
+      - {name: Date precision, type: enum, values: [Month, Year only], computed: date_precision}
+  - name: Project
+    group: Work experience
+    kind: projects
+    list: true
+    fields:
+      - {name: Name, type: string}
+      - {name: Start date, type: date}
+      - {name: End date, type: date}
+  - name: Publication
+    group: Work experience
+    kind: publications
+    list: true
+    fields:
+      - {name: Title, type: string}
+      - {name: Publisher or venue, type: string}
+      - {name: Date, type: date}
+  - name: Degree
+    group: Education
+    kind: education
+    list: true
+    fields:
+      - {name: Institution, type: string, role: institution}
+      - {name: Degree title, type: string}
+      - {name: Degree level, type: enum, values: [Bachelor, Master, Doctorate, Not stated], role: level}
+      - {name: Graduation date, type: date, role: graduation}
+  - name: Course
+    group: Education
+    kind: courses
+    list: true
+    fields:
+      - {name: Course name, type: string}
+      - {name: Completion date, type: date}
+  - name: Job skills
+    group: Technical skills
+    kind: skills
+    list: true
+    fields:
+      - {name: Skill, type: string, role: name}
+      - {name: Proficiency, type: enum, values: [Basic, Advanced]}
+      - {name: Months used, type: number, computed: months_used}
+      - {name: Last used, type: date, computed: last_used}
+  - name: Digital and AI
+    group: Technical skills
+    kind: skills
+    list: true
+    fields:
+      - {name: Skill, type: string, role: name}
+      - {name: Proficiency, type: enum, values: [Basic, Advanced]}
+  - name: Languages
+    group: Technical skills
+    kind: languages
+    list: true
+    fields:
+      - {name: Language, type: string}
+  - name: Other information
+    group: Identity
+    kind: other_information
+    list: true
+    fields:
+      - {name: Topic, type: string, role: topic}
+      - {name: Details, type: text, role: details}
+      - {name: Kind, type: enum, role: kind, values: [Achievements, References, Availability, Personal details, Interests,
+                                                       Declaration, Summary, Research and grants, Teaching, Training, Skills, Other]}

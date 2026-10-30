@@ -157,6 +157,23 @@ _SPECS = [
         "App-only Microsoft Graph client with typed errors; create/reschedule/cancel Teams meetings.",
         "table-less, router-less (AI tier)",
     ),
+    PackageSpec(
+        "cv",
+        "asas-cv",
+        "asas_cv",
+        "packages/asas-cv",
+        "CV intake pieces: text out of a PDF, Word or text document with coded refusals, the headshot lifted out, the parsed CV shape with durations computed.",
+        "table-less, router-less",
+    ),
+    PackageSpec(
+        "cv_profile",
+        "asas-cv-profile",
+        "asas_cv_profile",
+        "packages/asas-cv-profile",
+        "A CV read into the host's profile model, every value citing its numbered lines and checked in code; "
+        "Document Intelligence for PDFs, an asas-agent release for the reading.",
+        "table-less, router-optional (AI tier)",
+    ),
 ]
 
 PACKAGES: dict[str, PackageSpec] = {spec.key: spec for spec in _SPECS}

@@ -5,6 +5,14 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.10 (unreleased)
+
+- `asas add cv_profile` and `asas new` know `asas-cv-profile`: a registry entry, a boot snippet and the offline fallback tag `asas-cv-profile/v0.1.0`.
+
+## 0.1.9 (unreleased)
+
+- `asas add cv` and `asas new` know `asas-cv`: a registry entry, a boot snippet and the offline fallback tag `asas-cv/v0.1.0`.
+
 ## 0.1.8 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.4.0`, the release with

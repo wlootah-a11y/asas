@@ -268,6 +268,30 @@ SNIPPETS: dict[str, BootSnippet] = {
             "# TODO: your agent's folder; pin release[\"id\"] on every run",
         ),
     ),
+    "cv": BootSnippet(
+        imports=("import asas_cv",),
+        setup=(
+            "# On an upload: the text a model reads, the headshot if there is one, and\n"
+            "# the shape the model's answer is validated into. Pure; nothing to configure.\n"
+            "# text = asas_cv.extract_text(raw, filename=name, declared_type=content_type)\n"
+            "#   (asas_cv.ExtractionError carries .code: document_no_text for a scan, ...)\n"
+            "# photo = asas_cv.extract_profile_photo(raw, name)  # None when none; never raises\n"
+            "# sections = asas_cv.ParsedCVSections.model_validate(model_output)  "
+            "# TODO: your asas-llm call with response_format=asas_cv.ParsedCVSections\n"
+            "# asas_cv.settle_years_of_experience(sections)",
+        ),
+    ),
+    "cv_profile": BootSnippet(
+        imports=("import asas_agent", "import asas_cv_profile", "from pathlib import Path"),
+        setup=(
+            '# profile_model = asas_cv_profile.load_model(Path("profile.yaml"))  # TODO: your sections, kinds and roles\n'
+            "# asker = asas_cv_profile.Asker(asas_cv_profile.default_release(settings.model),\n"
+            "#     provider=asas_agent.gateway_provider(api_key=..., base_url=...))  # TODO: your gateway\n"
+            "# builder = asas_cv_profile.ProfileBuilder(profile_model, asker,\n"
+            "#     pdf=asas_cv_profile.LayoutReader(endpoint=..., key=...))  # TODO: your Document Intelligence\n"
+            "# built = await builder.build(raw, name)  # asas_cv_profile.Refused carries .code",
+        ),
+    ),
     "mcp": BootSnippet(
         imports=("import asas_mcp", "from starlette.routing import Route"),
         setup=(

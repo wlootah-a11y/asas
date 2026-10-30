@@ -1,0 +1,10 @@
+# The profile builder: a CV's numbered lines in, the sections a call names out, every
+# entry citing the lines it came from. One-shot: no skills, no tools.
+# Low reasoning effort: the job is reading, not judging.
+# Tracing off: a CV is personal data and must not land in a trace.
+name: Profile builder
+max_turns: 2
+max_tools: 1
+settings:
+  model: {reasoning: {effort: low}}
+  tracing: {enabled: false, sensitive: false}
