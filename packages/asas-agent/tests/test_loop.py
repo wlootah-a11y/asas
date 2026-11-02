@@ -169,6 +169,43 @@ def test_described_tools_name_their_skills_except_the_ones_every_skill_holds():
     assert tools["ticket_read"] == "Tool" and tools["ask_customer"] == "Tool"
 
 
+def skill_less(tools=()):
+    snap = snapshot()
+    snap["release"]["skills"] = {}
+    snap["tools"] = [d for d in snap["tools"] if d["name"] in tools]
+    return snap
+
+
+def test_a_release_with_no_skill_is_offered_no_activate_skill():
+    tools = described_tools(skill_less({"ticket_read"}), RENDERER)
+    assert [d["name"] for d in tools] == ["ticket_read"]
+    assert described_tools(skill_less(), RENDERER) == []
+
+
+def test_a_release_with_no_skill_renders_no_catalogue_and_no_active_skill():
+    text = instructions_for(skill_less(), None, RENDERER)
+    assert "## Skills" not in text and "## Active skill" not in text
+    assert RENDERER.no_skill not in text
+    assert text == "\n\n".join(
+        [
+            "Base instructions",
+            "## Customer\nName: Lina",
+            "## The ticket\nThe latest copy in the input is current.",
+        ]
+    )
+
+
+def test_a_one_shot_release_calls_the_model_with_no_tool():
+    model = ScriptedModel([(None, "Done.")])
+    result = run(
+        run_agent(
+            skill_less(), never_dispatched, never_asked, renderer=RENDERER, model=model
+        )
+    )
+    assert model.seen[0][1] == {}
+    assert result["ended"] == "answered"
+
+
 def test_activation_swaps_the_skill_and_the_record_follows_each_write():
     model = ScriptedModel(
         [

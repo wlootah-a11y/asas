@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asas-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Asas agent framework: agents on the OpenAI Agents SDK, released whole under the hash of their content, with skills as playbooks, run contracts a durable host can replay, and procedure evals run four times on a measured gateway. Independent of Temporal; a host hosts the runs."
 readme = "README.md"
 requires-python = ">=3.11"

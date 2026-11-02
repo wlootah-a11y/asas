@@ -96,12 +96,11 @@ def instructions_for(
     else:
         active = renderer.no_skill
         clauses = ""
-    parts = [
-        release["instructions"],
-        *renderer.head(snapshot),
-        f"## Skills\n{catalogue}",
-        f"## Active skill\n{active}",
-    ]
+    parts = [release["instructions"], *renderer.head(snapshot)]
+    if skills:
+        # A release with no skill has no catalogue to read and no skill to activate,
+        # so neither section is rendered (nor is `activate_skill` offered).
+        parts += [f"## Skills\n{catalogue}", f"## Active skill\n{active}"]
     if clauses:
         parts.append(f"## The policy clauses this skill applies\n{clauses}")
     parts.extend(renderer.tail(snapshot))
@@ -125,7 +124,12 @@ def described_tools(
     snapshot: Mapping[str, Any], renderer: ContextRenderer
 ) -> list[dict]:
     """Every tool the model sees, activate_skill first, each description prefixed with
-    the skills that hold it. Pure, so a model called by reference builds the same list."""
+    the skills that hold it. Pure, so a model called by reference builds the same list.
+
+    A release with no skill is not offered `activate_skill`: there is nothing it could
+    activate, and a one-shot release then calls the model with no tool at all, which a
+    model that refuses a reasoning effort beside a function tool on chat completions
+    accepts (and every call is the tool's description shorter)."""
     skills = snapshot["release"]["skills"]
 
     def described(d: dict) -> str:
@@ -134,10 +138,8 @@ def described_tools(
             return d["description"]
         return f"[{', '.join(holders)}] " + d["description"]
 
-    return [
-        activate_skill_tool(renderer),
-        *[{**d, "description": described(d)} for d in snapshot["tools"]],
-    ]
+    host = [{**d, "description": described(d)} for d in snapshot["tools"]]
+    return [activate_skill_tool(renderer), *host] if skills else host
 
 
 def model_settings(

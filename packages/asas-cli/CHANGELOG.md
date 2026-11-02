@@ -7,8 +7,9 @@ Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASI
 
 ## 0.1.8 (unreleased)
 
-- The offline fallback pin for `asas-agent` moves to `v0.4.0`, the release with
-  release stores, per-agent settings and tracing, a typed answer and the guarded model.
+- The offline fallback pin for `asas-agent` moves to `v0.5.0` (no `activate_skill`
+  for a release with no skill), over `v0.4.0`, the release with release stores,
+  per-agent settings and tracing, a typed answer and the guarded model.
 
 ## 0.1.7 (unreleased)
 

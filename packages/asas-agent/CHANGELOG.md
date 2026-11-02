@@ -5,6 +5,23 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.5.0
+
+A release with no skill is called with no skill machinery. A minor, because what
+the model reads changes for such a release (a host may have measured its prompt
+against the old text); a release with skills reads exactly what it read on 0.4.0,
+and no release id changes.
+
+- **No `activate_skill` without a skill.** `described_tools` offers it only when the
+  release (or the stage's view of it) holds at least one skill, so a one-shot
+  release calls the model with its host tools alone, often none. On a gateway's
+  chat completions a model that refuses a reasoning effort beside a function tool
+  (gpt-5.5) refused every such call, though the tool could never be used; every
+  call is also the tool's description shorter.
+- **No empty skill sections.** `instructions_for` renders `## Skills` and
+  `## Active skill` (with the renderer's `no_skill`) only when there is a skill;
+  the prompt, the host's head and tail sections are unchanged.
+
 ## 0.4.0
 
 The agent as configuration: a release carries its settings and lives in a store the
