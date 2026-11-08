@@ -52,6 +52,44 @@ have and the roadmap named as the reason it was not yet a library.
 - Langfuse is pinned `>=2.50,<3`. The 3.x SDK is a different API; it gets its own
   `Tracer`/`PromptStore` adapter when a host needs it, which is why those are
   protocols.
+- **The gateway layers** (added 19 Oct 2026, from the same engine's
+  `base/llm/gateway`, `admission`, `provenance` and `output_caps`, about
+  1,600 lines of code and 1,400 of tests, with their reasoning):
+  - `asas_llm.guard` / `rules` / `content_safety`: every chat completion
+    inspected before it is sent (prompt-injection rules plus a
+    `ContentScanner`, Azure AI Content Safety shipped, on the untrusted text
+    the runner marks) and before its answer is used (unsafe-answer rules plus
+    harm categories). `GuardPolicy` settles a finding per direction as
+    `off | monitor | enforce`; `guarded(ChatModelClass, policy=...)` builds
+    the client class with the guard, the admission slot, a timer and outbound
+    headers in its four completion methods. A finding is logged by rule name,
+    never by text, counted in `GUARD_EVENTS`, and refused as `UnsafeContent`
+    (or the host's class).
+  - `asas_llm.admission` / `slots`: `Admission` caps model requests in flight
+    across every process on a Redis sorted set of leases (`WideSemaphore`),
+    with an interactive lane bulk work gives way to, a per-process fallback
+    share when Redis is unreachable, and `shares_quota` for clients off the
+    chat gateway. The Redis client is injected; the package imports none.
+  - `asas_llm.provenance`: `PromptRef`, `CallProvenance`, `OutputProvenance`,
+    `recording()`, `identity()`, `of_calls()`. Every `LLMResult` now carries
+    its `CallProvenance`; only a registry-served prompt names a version.
+  - `asas_llm.overrides`: `ModelOverrides`, `OutputCaps`, `ModelAllowlist`,
+    `prefix=value` strings matched on the call name by longest prefix, read
+    live from a value or a callable. The runner applies them (model, cap,
+    allowlist before any client exists); `asas_llm.callbacks.TruncatedOutputLogger`
+    logs a call that stopped at its cap.
+  - `asas_llm.masking.mask_prefixed(prefixes)`: a Langfuse mask by key prefix
+    that never raises.
+  - `asas_llm.evals`: `EvalCase`, `run_cases` (pass^N, expectations, a host
+    check, a model `Judge`), `cases_from_langfuse`.
+  - `LLMRunner.ainvoke` gains `reasoning_effort`, `request_timeout`,
+    `untrusted_keys` and `log_detail`; `ModelOptions` gains `max_tokens`,
+    `reasoning_effort`, `request_timeout`, `max_retries` and `callbacks`; the
+    two factories take `client_class`. A busy gateway is raised as
+    `GatewayBusy` and a guard refusal as itself, never as `GenerationFailed`
+    (`busy_cause`, `refusal_cause` in `errors`). One `llm_call` log line per
+    answered call, never the answer's text.
+  - New extra `[guard]` (`httpx`), and `pytest-asyncio` in `[dev]`.
 - Licensed **Apache 2.0**, with `LICENSE` and `NOTICE` in the wheel.
 - `tests/test_host_contract.py` per TEAMY-798, plus a test that `import asas_llm`
   loads no optional SDK, run in a fresh interpreter.

@@ -88,7 +88,7 @@ Every Asas package holds to the same twelve principles, in no particular order:
 | `asas-audit` | `asas_audit` | table-owning (package Alembic chain) + router |
 | `asas-oracle` | `asas_oracle` | table-less, router-less (Oracle Fusion REST client) |
 | `asas-graph` | `asas_graph` | table-less, router-less (Microsoft Graph client, Teams meetings) |
-| `asas-llm` | `asas_llm` | table-less, router-less (prompts, tracing, structured output) |
+| `asas-llm` | `asas_llm` | table-less, router-less (prompts, tracing, structured output, the guard, admission, provenance, evals) |
 | `asas-agent` | `asas_agent` | table-less, router-less (agent releases, skills, run contracts, evals; no Temporal) |
 | `asas-cli` | `asas_cli` | tooling |
 
