@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "asas-agent"
-version = "0.4.0"
+version = "0.6.0"
 description = "Asas agent framework: agents on the OpenAI Agents SDK, released whole under the hash of their content, with skills as playbooks, run contracts a durable host can replay, and procedure evals run four times on a measured gateway. Independent of Temporal; a host hosts the runs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,10 +27,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The Langfuse release store; a host without Langfuse never installs it.
+# The Langfuse release store and the 2.x trace processor; a host without Langfuse
+# never installs it.
 langfuse = ["langfuse>=2,<3"]
+# The OpenTelemetry trace processor (Langfuse SDK v3 and later, built on 5.1) and
+# the same release store: for a Langfuse v4 server that takes traces over
+# OpenTelemetry only. Choose one of the two extras, never both.
+langfuse-otel = ["langfuse>=3,<6"]
 dev = [
     "pytest>=8",
+    # The OpenTelemetry processor's tests export through a real client into
+    # OpenTelemetry's in-memory exporter (the 2.x processor's tests use a stub).
+    "langfuse>=3,<6",
 ]
 
 [project.scripts]

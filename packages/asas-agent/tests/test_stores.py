@@ -94,7 +94,9 @@ class FakeLangfuse:
     def get_prompt(self, name, *, label, type, cache_ttl_seconds):
         for number, (n, prompt, config, labels) in enumerate(self.versions, 1):
             if n == name and label in labels:
-                return SimpleNamespace(prompt=prompt, config=config, version=number)
+                return SimpleNamespace(
+                    name=n, prompt=prompt, config=config, version=number
+                )
         raise LookupError("not found")
 
     def create_prompt(self, *, name, prompt, config, labels, type, commit_message):
@@ -120,7 +122,8 @@ def test_the_langfuse_store_keeps_the_agent_in_one_prompt(agents_dir):
     assert "id" not in config and "instructions" not in config
     assert labels == [f"release-{release['id'][:16]}"]
     run(store.promote("helper", release["id"], "production"))
-    assert run(fetch_release(store, "helper", "production", model="m-1")) == release
+    served = run(fetch_release(store, "helper", "production", model="m-1"))
+    assert {k: v for k, v in served.items() if k != "source"} == release
     # An edit in Langfuse's editor is a new version; once labelled, it runs as itself.
     client.versions.append(("agent-helper", "Edited.", config, ["production"]))
     client.versions[0][3].remove("production")
@@ -128,6 +131,30 @@ def test_the_langfuse_store_keeps_the_agent_in_one_prompt(agents_dir):
     assert edited["instructions"] == "Edited." and edited["id"] != release["id"]
     with pytest.raises(ValueError, match="not published"):
         run(store.promote("helper", "f" * 64, "production"))
+
+
+def test_the_langfuse_store_keeps_where_it_read_from_outside_the_id(agents_dir):
+    client = FakeLangfuse()
+    store = LangfuseStore(client, prefix="agent-")
+    release = build(agents_dir)
+    run(store.publish("helper", release))
+    run(store.promote("helper", release["id"], "production"))
+    served = run(store.read("helper", "production"))
+    assert served["source"] == {
+        "name": "agent-helper",
+        "version": 1,
+        "label": "production",
+    }
+    fetched = run(fetch_release(store, "helper", "production", model="m-1"))
+    assert fetched["id"] == release["id"]  # source is provenance, not content
+    assert fetched["source"] == served["source"]
+    # What a store read is published again without it, and a config cannot forge it.
+    run(store.publish("elsewhere", fetched))
+    assert "source" not in client.versions[-1][2]
+    client.versions[0][2]["source"] = {"name": "forged", "version": 99}
+    assert run(store.read("helper", "production"))["source"]["name"] == "agent-helper"
+    # A release built from files has none.
+    assert "source" not in release
 
 
 def test_publish_and_promote_from_the_command_line(agents_dir, tmp_path, capsys):

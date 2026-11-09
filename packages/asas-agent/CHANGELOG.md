@@ -5,6 +5,69 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.6.0
+
+Traces a Langfuse v4 server keeps. A self-hosted Langfuse 4.73.0 in events-only
+ingestion mode refuses the 2.x client's `trace-create` and `generation-create`
+events (HTTP 207, dropped silently by the client), so a host on 0.5.0 sent traces
+nobody kept. Additive: the 2.x processor, the `langfuse` extra and everything
+`run_agent` sends are unchanged.
+
+- **`LangfuseOtelTracingProcessor`** (`asas_agent.otel_tracing`), the processor
+  DESIGN.md planned beside the 2.x one: the Langfuse Python SDK v3 and later
+  (OpenTelemetry; built and tested on 5.1). Same mapping (trace id = the SDK's
+  32 hex, workflow name, group id as session, generations with model, messages,
+  usage and the prompt link, tool calls with arguments and result, errors as the
+  `ERROR` level), same reserved metadata keys, same `mask` contract. Every
+  observation carries the trace's user, session, tags, version, name and metadata
+  through `langfuse.propagate_attributes` in a context of the trace's own, never
+  on a span of the host's; the release rides the metadata as `asas_release`
+  (v3+ has no per-trace release). Observations open when the SDK span starts and
+  close when it ends, and agent, function and guardrail spans are Langfuse
+  `agent`, `tool` and `guardrail` observations.
+- **The `langfuse-otel` extra** (`langfuse>=3,<6`). Choose it or `langfuse`, not
+  both. `LangfuseStore` works with either client (its three calls bind to both;
+  a test pins the v3+ signatures).
+- **Tests** export through a real client into OpenTelemetry's in-memory exporter;
+  the dev extra installs `langfuse>=3,<6` for them, and the one test that drives a
+  real 2.x client skips when the installed client is v3+.
+
+## 0.5.0
+
+What Langfuse needs to find a run and the prompt version behind it, on the Langfuse
+2.x client the package already pins, and a release with no skill called with no
+skill machinery. A minor, because what the model reads changes for a skill-less
+release (a host may have measured its prompt against the old text); a release with
+skills reads exactly what it read on 0.4.0, a host that passes nothing new sends
+what it sent, and no release id changes. Moving to the Langfuse SDK v5
+(OpenTelemetry) is not part of this release (DESIGN.md).
+
+- **No `activate_skill` without a skill.** `described_tools` offers it only when the
+  release (or the stage's view of it) holds at least one skill, so a one-shot
+  release calls the model with its host tools alone, often none. On a gateway's
+  chat completions a model that refuses a reasoning effort beside a function tool
+  (gpt-5.5) refused every such call, though the tool could never be used; every
+  call is also the tool's description shorter.
+- **No empty skill sections.** `instructions_for` renders `## Skills` and
+  `## Active skill` (with the renderer's `no_skill`) only when there is a skill;
+  the prompt, the host's head and tail sections are unchanged.
+- **`TraceAttributes`** (`user_id`, `session_id`, `tags`, `version`, `release`,
+  `metadata`; frozen, all optional) and `run_agent(..., trace=)`. The processor sends
+  user, tags, version and release on the Langfuse trace. `group_id` and
+  `trace_metadata` keep working and win over `trace` where both name the same thing.
+  They travel as reserved `langfuse.*` keys in the SDK trace's metadata, stripped
+  from what is forwarded, so a host that opens its own `trace(...)` writes the same
+  keys (README, "Tracing attributes and the prompt link").
+- **The prompt link.** `LangfuseStore.read` returns `source` (the Langfuse prompt's
+  `name`, `version` and the `label` read) in the release. It is provenance: it never
+  enters the content hash, so ids are unchanged, and `build_release` has none. Given
+  such a release, `run_agent` links every generation of the run to that prompt
+  version (`generation(prompt=...)`), also inside a trace the host opened.
+- **Fix:** a generation from the Responses API reached Langfuse with `model=None`
+  (the span exports none). It now gets the response's model, else the run's.
+- **`LangfuseTracingProcessor.shutdown()`** flushes once, later calls do nothing, and
+  neither it nor `force_flush()` raises. The client stays open: it is the host's.
+
 ## 0.4.0
 
 The agent as configuration: a release carries its settings and lives in a store the

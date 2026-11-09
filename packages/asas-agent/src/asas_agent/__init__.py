@@ -54,6 +54,7 @@ from .releases import (
 )
 from .seams import AskHandler, ContextRenderer, ReleaseStore, SkillAware, ToolDispatcher
 from .skills import load_skills, parse_skill
+from .trace_attributes import TraceAttributes
 
 if TYPE_CHECKING:  # pragma: no cover
     from .guard import GuardedModel
@@ -71,10 +72,11 @@ if TYPE_CHECKING:  # pragma: no cover
         run_usage,
     )
     from .models import GATEWAY_KEYS, GatewayModels, MeasuredModel, usage_of
+    from .otel_tracing import LangfuseOtelTracingProcessor
     from .providers import azure_provider, gateway_provider
     from .tracing import LangfuseTracingProcessor
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"
 
 #: Names served by the modules that import the SDK, loaded on first use: the eval
 #: models, the production providers, the Langfuse tracing, the guarded model and the
@@ -87,6 +89,7 @@ _LAZY: dict[str, str] = {
     "gateway_provider": "providers",
     "azure_provider": "providers",
     "LangfuseTracingProcessor": "tracing",
+    "LangfuseOtelTracingProcessor": "otel_tracing",
     "GuardedModel": "guard",
     "LangfuseStore": "langfuse_store",
     "AskPending": "loop",
@@ -122,6 +125,7 @@ __all__ = [
     "FileStore",
     "GatewayModels",
     "GuardedModel",
+    "LangfuseOtelTracingProcessor",
     "LangfuseStore",
     "LangfuseTracingProcessor",
     "MeasuredModel",
@@ -135,6 +139,7 @@ __all__ = [
     "ToolBudgetExceeded",
     "ToolCall",
     "ToolDispatcher",
+    "TraceAttributes",
     "TurnResult",
     "__version__",
     "assert_expected_record",
