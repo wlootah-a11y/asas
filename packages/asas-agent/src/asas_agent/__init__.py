@@ -54,6 +54,7 @@ from .releases import (
 )
 from .seams import AskHandler, ContextRenderer, ReleaseStore, SkillAware, ToolDispatcher
 from .skills import load_skills, parse_skill
+from .trace_attributes import TraceAttributes
 
 if TYPE_CHECKING:  # pragma: no cover
     from .guard import GuardedModel
@@ -74,7 +75,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .providers import azure_provider, gateway_provider
     from .tracing import LangfuseTracingProcessor
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 #: Names served by the modules that import the SDK, loaded on first use: the eval
 #: models, the production providers, the Langfuse tracing, the guarded model and the
@@ -135,6 +136,7 @@ __all__ = [
     "ToolBudgetExceeded",
     "ToolCall",
     "ToolDispatcher",
+    "TraceAttributes",
     "TurnResult",
     "__version__",
     "assert_expected_record",

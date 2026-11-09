@@ -7,6 +7,10 @@ is never stored in Langfuse: :func:`~asas_agent.releases.fetch_release` computes
 from what the label serves, so an edit made in the editor gets its own id and the run
 records what really ran.
 
+`read` also returns where it read the release from, `source` (the prompt's `name`,
+`version` and the `label` asked for). It is not part of the id, and `run_agent` uses
+it to link the run's generations to that prompt version in Langfuse.
+
 A published release also carries the label `release-<first 16 of its id>`, which is
 how publishing again finds it instead of adding a version, and how `promote` finds
 the version to move a label to.
@@ -56,8 +60,11 @@ class LangfuseStore:
         prompt = await asyncio.to_thread(
             self._get, agent, label, self.cache_ttl_seconds
         )
-        config = {k: v for k, v in (prompt.config or {}).items() if k != "id"}
-        return {**config, "instructions": prompt.prompt}
+        config = {
+            k: v for k, v in (prompt.config or {}).items() if k not in ("id", "source")
+        }
+        source = {"name": prompt.name, "version": prompt.version, "label": label}
+        return {**config, "instructions": prompt.prompt, "source": source}
 
     async def _version(self, agent: str, release_id: str) -> int | None:
         try:
@@ -72,7 +79,11 @@ class LangfuseStore:
     async def publish(self, agent: str, release: Mapping[str, Any]) -> None:
         if await self._version(agent, release["id"]) is not None:
             return
-        config = {k: v for k, v in release.items() if k not in ("id", "instructions")}
+        config = {
+            k: v
+            for k, v in release.items()
+            if k not in ("id", "instructions", "source")
+        }
         await asyncio.to_thread(
             self.client.create_prompt,
             name=self.prefix + agent,

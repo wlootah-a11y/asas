@@ -27,7 +27,7 @@ _TAG_RE = re.compile(r"refs/tags/([a-z0-9-]+)/(v\d+\.\d+\.\d+)$")
 # wins over both this and live discovery.
 FALLBACK_TAGS: dict[str, str] = {
     "asas-access": "v0.15.0",
-    "asas-agent": "v0.4.0",
+    "asas-agent": "v0.5.0",
     "asas-audit": "v0.1.0",
     "asas-graph": "v0.1.0",
     "asas-jobs": "v0.11.1",

@@ -83,6 +83,20 @@ an id must hash to it. Content that claims none, an edit made in a store's own
 editor, is given the id of what it says, so the run records what really ran and a
 change of model or of one word is a new id.
 
+## Langfuse SDK v5
+
+`LangfuseTracingProcessor` writes through the Langfuse 2.x client (`trace`,
+`generation`, `span`), the one the self-hosted servers hosts run today accept. The
+v5 SDK is OpenTelemetry-native: a v5 processor would sit beside this one, not
+replace it, as another `TracingProcessor` (`LangfuseOtelTracingProcessor`, in
+its own extra) that opens OTel spans with the same mapping and the same reserved
+metadata keys, writes them as the OTel span attributes v5 defines for user, tags,
+version, release, prompt name and version and model (checked against v5 when it is
+built, not now), and takes `trace_id` from the SDK trace
+id (32 hex, as now). `TraceAttributes`, `release["source"]` and the run's context
+variable are SDK-free for that reason: a host chooses one processor and everything
+`run_agent` sends stays the same. It waits until the servers hosts run accept v5.
+
 ## Tables
 
 None yet. When the run store moves here it owns its tables and its Alembic chain,

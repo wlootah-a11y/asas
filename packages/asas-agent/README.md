@@ -100,6 +100,55 @@ Three things a host that must keep data in-country has to get right:
 - **Always pass `base_url`.** `gateway_provider`'s default `base_url=None`
   means api.openai.com, so a host on a gateway must name the gateway's URL.
 
+## Tracing attributes and the prompt link
+
+A run can tell Langfuse who it is for, how to find it and which prompt version
+served it:
+
+```python
+from asas_agent import TraceAttributes, run_agent
+
+await run_agent(snapshot, dispatch, ask, renderer=renderer, provider=provider,
+                group_id=session_id,                    # the Langfuse session
+                trace=TraceAttributes(user_id="u-17", tags=("screening", "qa"),
+                                      version="3", release="2026.11.0",
+                                      metadata={"tenant": "t-1"}))
+```
+
+`group_id` and `trace_metadata` keep working and win over `trace` when both name
+the same thing: `group_id` over `session_id`, a `trace_metadata` key over the same
+key in `metadata`. A tag holds no comma.
+
+**A host that opens its own trace.** `with agents.tracing.trace(name, trace_id=...)`
+around `run_agent` makes the run join that trace, so `run_agent` cannot set its
+attributes. The processor reads them from the trace's metadata under these keys,
+removes them from the metadata it forwards, and sends each as the Langfuse trace
+field of the same name:
+
+| Metadata key | Langfuse trace field | Value |
+| --- | --- | --- |
+| `langfuse.user_id` | `userId` | string |
+| `langfuse.tags` | `tags` | tags joined with commas (`"a,b"`) |
+| `langfuse.version` | `version` | string |
+| `langfuse.release` | `release` | string (overrides the client's own) |
+
+The session is the SDK trace's `group_id`. `run_agent(trace=...)` writes these same
+keys, so the two routes cannot differ.
+
+**The prompt link.** `LangfuseStore.read` keeps where the release came from in
+`release["source"]` (`name`, `version`, `label`), outside the content hash, so the
+id is unchanged. `run_agent` links each generation of that run to the prompt version
+(`generation(prompt=...)` on the 2.x client), so Langfuse shows the version and its
+metrics. This works with or without a trace the host opened. A release built from
+files has no `source` and no link.
+
+**The model.** The Responses API's span exports no model, so Langfuse showed
+`model=None`. A generation now gets the response's model, else the name the run
+asked for. A span that names its model keeps it.
+
+`processor.shutdown()` and `force_flush()` flush the client and never raise;
+`shutdown()` does it once and leaves the client open.
+
 ## The agent as configuration
 
 A release is the whole agent: prompt, skills, model, budgets and `settings` in
