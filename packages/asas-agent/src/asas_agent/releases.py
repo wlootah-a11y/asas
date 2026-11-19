@@ -14,6 +14,11 @@ writes it. Any key added to a release changes every id, so the shape below is a 
 `settings` is the one optional key: a release whose agent.yaml names none carries none, so
 its id is what it was before settings existed.
 
+`source` (0.5.0) says where a store read the release from (for Langfuse, the prompt's
+`name`, `version` and `label`) so a run can link its generations to that version. It
+is provenance, not content: it never enters the id, a file-built release has none, and
+the same content read from another version has the same id.
+
 `settings` is the rest of the agent as configuration: `model`, the SDK's model settings
 (temperature, reasoning, max_tokens and the like), and `tracing`, `enabled` and
 `sensitive` (whether the trace keeps the run's content).
@@ -37,15 +42,18 @@ import yaml
 from .seams import ReleaseStore
 from .skills import load_skills
 
-#: The keys every release carries; `settings` is the only optional one.
+#: The keys every release carries; `settings` is the only optional one (and `source`,
+#: which a store adds and the id ignores).
 REQUIRED = ("name", "model", "instructions", "skills", "max_turns", "max_tools")
 _ID = re.compile(r"[0-9a-f]{64}")
 _NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,99}")
 
 
 def release_id(release: Mapping[str, Any]) -> str:
-    """The content hash of a release that does not yet carry its id."""
-    return hashlib.sha256(json.dumps(release, sort_keys=True).encode()).hexdigest()
+    """The content hash of a release that does not yet carry its id. `source`, where
+    a store read it from, is provenance and is left out."""
+    content = {k: v for k, v in release.items() if k != "source"}
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
 def build_release(
@@ -88,7 +96,7 @@ def release_from(
     missing = [key for key in REQUIRED if key not in payload]
     if missing:
         raise ValueError(f"Agent release is missing {', '.join(missing)}")
-    unknown = set(payload) - {*REQUIRED, "settings", "id"}
+    unknown = set(payload) - {*REQUIRED, "settings", "id", "source"}
     if unknown:
         raise ValueError(f"Agent release has unknown keys {', '.join(sorted(unknown))}")
     if not isinstance(payload["skills"], dict) or not all(
@@ -98,6 +106,8 @@ def release_from(
         raise ValueError("Agent release skills or budgets are malformed")
     if "settings" in payload and not isinstance(payload["settings"], dict):
         raise ValueError("Agent release settings must be a mapping")
+    if "source" in payload and not isinstance(payload["source"], dict):
+        raise ValueError("Agent release source must be a mapping")
     release = {key: payload[key] for key in payload if key != "id"}
     release["id"] = release_id(release)
     if "id" in payload and payload["id"] != release["id"]:
@@ -169,8 +179,7 @@ def read_release(directory: Path, model: str, *, environment: str) -> dict[str, 
     if len(pinned) != 64 or any(c not in "0123456789abcdef" for c in pinned):
         raise ValueError("Invalid agent release reference")
     release = json.loads((directory / "releases" / f"{pinned}.json").read_text())
-    check = dict(release)
-    check.pop("id")
+    check = {k: v for k, v in release.items() if k != "id"}
     if release_id(check) != pinned or release["model"] != model:
         raise ValueError("Agent release integrity or model configuration mismatch")
     return release

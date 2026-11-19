@@ -7,6 +7,10 @@ is never stored in Langfuse: :func:`~asas_agent.releases.fetch_release` computes
 from what the label serves, so an edit made in the editor gets its own id and the run
 records what really ran.
 
+`read` also returns where it read the release from, `source` (the prompt's `name`,
+`version` and the `label` asked for). It is not part of the id, and `run_agent` uses
+it to link the run's generations to that prompt version in Langfuse.
+
 A published release also carries the label `release-<first 16 of its id>`, which is
 how publishing again finds it instead of adding a version, and how `promote` finds
 the version to move a label to.
@@ -20,9 +24,10 @@ the version to move a label to.
 Who may move `production` is Langfuse's to enforce (its roles, or a project only a
 release pipeline writes to); the store moves whatever label it is told to.
 
-Needs the Langfuse 2.x client (`pip install 'asas-agent[langfuse]'`); ``import
-asas_agent`` loads this module only when its name is first used. The client is
-synchronous, so its calls run in a worker thread.
+Needs a Langfuse client, 2.x (`pip install 'asas-agent[langfuse]'`) or v3 and later
+(`'asas-agent[langfuse-otel]'`): the three calls it makes are the same on both.
+``import asas_agent`` loads this module only when its name is first used. The client
+is synchronous, so its calls run in a worker thread.
 """
 
 from __future__ import annotations
@@ -36,8 +41,8 @@ RELEASE_LABEL = "release-{}"
 
 
 class LangfuseStore:
-    """A :class:`~asas_agent.seams.ReleaseStore` over a ``langfuse.Langfuse`` (2.x)
-    client the host already has. `prefix` namespaces the prompt names; the SDK's own
+    """A :class:`~asas_agent.seams.ReleaseStore` over a ``langfuse.Langfuse`` (2.x, or
+    v3 and later) client the host already has. `prefix` namespaces the prompt names; the SDK's own
     cache serves a label for `cache_ttl_seconds` and then refreshes it."""
 
     def __init__(
@@ -56,8 +61,11 @@ class LangfuseStore:
         prompt = await asyncio.to_thread(
             self._get, agent, label, self.cache_ttl_seconds
         )
-        config = {k: v for k, v in (prompt.config or {}).items() if k != "id"}
-        return {**config, "instructions": prompt.prompt}
+        config = {
+            k: v for k, v in (prompt.config or {}).items() if k not in ("id", "source")
+        }
+        source = {"name": prompt.name, "version": prompt.version, "label": label}
+        return {**config, "instructions": prompt.prompt, "source": source}
 
     async def _version(self, agent: str, release_id: str) -> int | None:
         try:
@@ -65,14 +73,18 @@ class LangfuseStore:
             prompt = await asyncio.to_thread(
                 self._get, agent, RELEASE_LABEL.format(release_id[:16]), 0
             )
-        except Exception:  # noqa: BLE001 the 2.x client raises its API's NotFound
+        except Exception:  # noqa: BLE001 each client raises its API's NotFound
             return None
         return prompt.version
 
     async def publish(self, agent: str, release: Mapping[str, Any]) -> None:
         if await self._version(agent, release["id"]) is not None:
             return
-        config = {k: v for k, v in release.items() if k not in ("id", "instructions")}
+        config = {
+            k: v
+            for k, v in release.items()
+            if k not in ("id", "instructions", "source")
+        }
         await asyncio.to_thread(
             self.client.create_prompt,
             name=self.prefix + agent,

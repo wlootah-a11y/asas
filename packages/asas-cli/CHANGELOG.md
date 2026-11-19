@@ -5,6 +5,17 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.1.10 (unreleased)
+
+- The offline fallback pin for `asas-agent` moves to `v0.6.0`, the release with
+  the OpenTelemetry trace processor for a Langfuse v4 server (`langfuse-otel` extra).
+
+## 0.1.9 (unreleased)
+
+- The offline fallback pin for `asas-agent` moves to `v0.5.0`, the release with
+  trace attributes, the prompt link, the model on every generation, and no
+  `activate_skill` for a release with no skill.
+
 ## 0.1.8 (unreleased)
 
 - The offline fallback pin for `asas-agent` moves to `v0.4.0`, the release with
