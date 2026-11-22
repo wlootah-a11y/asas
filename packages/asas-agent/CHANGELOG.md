@@ -5,6 +5,13 @@ Pre-1.0, a breaking change bumps the **minor**.
 
 Release procedure and the historical tag mapping: [`RELEASING.md`](../../RELEASING.md).
 
+## 0.6.3
+
+A generation's cost is the model's real price, and a trace with a failure reads as failed. Fix only: nothing a host configures changes.
+
+- **`usage_buckets`** (`asas_agent.otel_tracing`): the OpenTelemetry processor sends a generation's usage in Langfuse's buckets, `input`, `output` and `total`, with the cached input tokens as `input_cached_tokens` and the reasoning output tokens as `output_reasoning_tokens`, each taken out of its parent. The processor used to keep only the SDK's flat counts, so a cached input token, a tenth of the input price on the GPT-5 family, was charged as a full one: on one host's dev project, where 97% of the input was cached, that put the week's cost at about four times the real one.
+- **The root observation** takes the `ERROR` level and the first error's message when any observation of its trace ended with an error, so the trace reads as failed in Langfuse's trace list and its filters; before, only the failing observation did.
+
 ## 0.6.2
 
 A trace shows its run's input and answer. Langfuse shows the root observation's input and output as the trace's own, and the OpenTelemetry processor opened the root empty and closed it empty, so every trace read `null` / `undefined` at the top even when its model calls kept their content. Fix only: nothing a host configures changes.

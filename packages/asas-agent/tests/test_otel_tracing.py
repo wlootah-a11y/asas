@@ -182,8 +182,8 @@ def test_a_generation_keeps_the_model_the_messages_and_the_usage(wire):
         {"role": "assistant", "content": "hello"}
     ]
     assert attribute(generation, "langfuse.observation.usage_details") == {
-        "input_tokens": 3,
-        "output_tokens": 2,
+        "input": 3,
+        "output": 2,
     }
 
 
@@ -441,3 +441,58 @@ def test_the_traces_input_and_output_are_masked():
     root = w.named("my-flow")
     assert attribute(root, "langfuse.observation.input") == "[masked]"
     assert attribute(root, "langfuse.observation.output") == "[masked]"
+
+
+def test_cached_and_reasoning_tokens_are_buckets_of_their_own(wire):
+    # Langfuse adds every bucket's cost: a cached token left inside ``input`` is
+    # charged the full input price, and one in both is charged twice.
+    from agents.tracing import response_span
+
+    with trace("my-flow", trace_id=TRACE_ID):
+        with response_span() as span:
+            span.span_data.usage = {
+                "requests": 1,
+                "input_tokens": 91000,
+                "output_tokens": 3000,
+                "total_tokens": 94000,
+                "input_tokens_details": {"cached_tokens": 89000},
+                "output_tokens_details": [{"reasoning_tokens": 1200}],
+            }
+    [generation] = wire.by_type("generation")
+    assert attribute(generation, "langfuse.observation.usage_details") == {
+        "input": 2000,
+        "input_cached_tokens": 89000,
+        "output": 1800,
+        "output_reasoning_tokens": 1200,
+        "total": 94000,
+    }
+
+
+def test_usage_buckets_never_go_negative_and_skip_what_is_absent():
+    from asas_agent.otel_tracing import usage_buckets
+
+    assert usage_buckets({}) is None
+    assert usage_buckets(
+        {"input_tokens": 5, "input_tokens_details": {"cached_tokens": 9}}
+    ) == {
+        "input": 0,
+        "input_cached_tokens": 5,
+    }
+    assert usage_buckets({"output_tokens": 4, "output_tokens_details": None}) == {
+        "output": 4
+    }
+
+
+def test_a_failed_observation_marks_the_trace_itself_as_failed(wire):
+    # run_flow's custom span ends with "boom": the root reads ERROR too.
+    run_flow()
+    root = wire.named("my-flow")
+    assert root.attributes.get("langfuse.observation.level") == "ERROR"
+    assert root.attributes.get("langfuse.observation.status_message") == "boom"
+
+
+def test_a_trace_with_no_failure_keeps_the_default_level(wire):
+    with trace("my-flow", trace_id=TRACE_ID):
+        with agent_span(name="assistant"):
+            pass
+    assert wire.named("my-flow").attributes.get("langfuse.observation.level") is None

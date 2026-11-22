@@ -27,7 +27,12 @@ one processor and nothing ``run_agent`` sends changes:
   model names a generation whose span names none (the Responses API's);
 * the root observation, which Langfuse shows as the trace itself, gets the run's
   input and answer when the trace ends: the first model call's input and the last
-  model call's output, as those generations sent them (masked);
+  model call's output, as those generations sent them (masked); and, when any of
+  its observations ended with an error, the ``ERROR`` level and the first error's
+  message, so the trace reads as failed in Langfuse's lists;
+* a generation's usage is in Langfuse's buckets (``usage_buckets``): ``input``,
+  ``output``, ``total``, and the cached input and reasoning output tokens apart
+  from them, so a cached token costs the model's cached price;
 * an ``agent``, ``function`` or ``guardrail`` span becomes a Langfuse agent,
   tool or guardrail observation, every other span a Langfuse span, named by its
   kind and name, with its data as input; a tool call keeps its arguments and
@@ -112,6 +117,48 @@ class _OpenTrace:
     # the first model call's input and the last model call's output.
     input: Any = None
     output: Any = None
+    # The first error any observation of the trace ended with: the root carries
+    # it too, so the trace itself reads ERROR in Langfuse's lists and filters.
+    error: str | None = None
+
+
+def _count(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _detail(details: Any, key: str) -> int:
+    """A count from the SDK's ``*_tokens_details``: a dict, or a one-item list of
+    one (``serialize_usage``'s shape)."""
+    if isinstance(details, list) and details:
+        details = details[0]
+    return (_count(details.get(key)) or 0) if isinstance(details, dict) else 0
+
+
+def usage_buckets(usage: dict[str, Any]) -> dict[str, int] | None:
+    """The SDK's usage as Langfuse's usage details: ``input``, ``output``, ``total``,
+    and the cached and reasoning tokens as buckets of their own,
+    ``input_cached_tokens`` and ``output_reasoning_tokens``, taken OUT of
+    ``input`` and ``output`` (Langfuse adds every bucket's cost, so a bucket left
+    inside its parent is counted twice). Langfuse prices a cached input token at
+    its model's cached price (a tenth of the input price for the GPT-5 family),
+    so without the bucket every cached token was charged as a full one."""
+    given = _count(usage.get("input_tokens"))
+    answered = _count(usage.get("output_tokens"))
+    total = _count(usage.get("total_tokens"))
+    cached = _detail(usage.get("input_tokens_details"), "cached_tokens")
+    reasoning = _detail(usage.get("output_tokens_details"), "reasoning_tokens")
+    buckets: dict[str, int] = {}
+    if given is not None:
+        buckets["input"] = max(given - cached, 0)
+        if cached:
+            buckets["input_cached_tokens"] = min(cached, given)
+    if answered is not None:
+        buckets["output"] = max(answered - reasoning, 0)
+        if reasoning:
+            buckets["output_reasoning_tokens"] = min(reasoning, answered)
+    if total is not None:
+        buckets["total"] = total
+    return buckets or None
 
 
 def _clip(value: Any) -> str:
@@ -229,6 +276,9 @@ class LangfuseOtelTracingProcessor(TracingProcessor):
                     for k, v in (("input", opened.input), ("output", opened.output))
                     if v is not None
                 }
+                if opened.error is not None:
+                    io["level"] = "ERROR"
+                    io["status_message"] = opened.error
                 if io:
                     opened.root.update(**io)
             except Exception:  # noqa: BLE001 - tracing must never fail the run
@@ -294,6 +344,7 @@ class LangfuseOtelTracingProcessor(TracingProcessor):
                 fields["status_message"] = str(
                     error.get("message") if isinstance(error, dict) else error
                 )
+                self._remember_error(span.trace_id, fields["status_message"])
             observation.update(**fields)
         except Exception:  # noqa: BLE001 - tracing must never fail the run
             log.warning(
@@ -306,6 +357,12 @@ class LangfuseOtelTracingProcessor(TracingProcessor):
                 observation.end()
             except Exception:  # noqa: BLE001
                 log.debug("asas_agent.otel_tracing: could not end span", exc_info=True)
+
+    def _remember_error(self, trace_id: str | None, message: str) -> None:
+        with self._lock:
+            opened = self._traces.get(langfuse_id(trace_id) or "")
+            if opened is not None and opened.error is None:
+                opened.error = message
 
     def _remember_io(
         self, trace_id: str | None, fields: dict[str, Any], span_data: dict[str, Any]
@@ -337,12 +394,7 @@ class LangfuseOtelTracingProcessor(TracingProcessor):
             or (response_model if isinstance(response_model, str) else None)
             or (link.model if link else None)
         )
-        usage = span_data.get("usage") or {}
-        usage_details = {
-            k: int(v)
-            for k, v in usage.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        } or None
+        usage_details = usage_buckets(span_data.get("usage") or {})
         given, answered = response_io(raw) if kind == "response" else (None, None)
         output = span_data.get("output")
         if output is None:
