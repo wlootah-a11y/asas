@@ -12,6 +12,13 @@ the same session. This processor maps them one to one:
   workflow name as its name and the group id as its session;
 * a ``generation`` or ``response`` span becomes a Langfuse generation, with
   the model, the input, the output and the token usage the SDK recorded;
+* the trace's user, tags, version and release are read from reserved keys in the
+  SDK trace's metadata (:mod:`asas_agent.trace_attributes`), removed from the
+  metadata it forwards; ``run_agent`` writes them, and so can a host that opens its
+  own trace;
+* inside ``run_agent``, a generation of a release read from a Langfuse prompt is
+  linked to that prompt version, and a generation whose span names no model (the
+  Responses API's) gets the run's;
 * every other span becomes a Langfuse span, named by its kind and name, with
   its data as input; a tool call keeps its arguments and result.
 
@@ -44,10 +51,20 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from agents.tracing import Span, Trace, TracingProcessor
+
+from .trace_attributes import (
+    RELEASE_KEY,
+    RESERVED_KEYS,
+    RUN_LINK,
+    TAGS_KEY,
+    USER_ID_KEY,
+    VERSION_KEY,
+)
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +75,56 @@ MASK_FAILED = "[mask failed]"
 
 #: Span kinds the SDK records a model call under.
 GENERATION_KINDS = frozenset({"generation", "response"})
+
+
+def _plain(item: Any) -> Any:
+    """A Responses API item as plain data: a pydantic model dumped, else as given."""
+    dump = getattr(item, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json", exclude_none=True)
+        except Exception:  # noqa: BLE001 - a trace field is best effort
+            return repr(item)
+    return item
+
+
+def response_io(raw: Any) -> tuple[Any, Any]:
+    """The input and output of a Responses API span, or ``(None, None)``.
+
+    ``ResponseSpanData.export()`` sends the response id, the usage and the type
+    alone; the model call's messages and answer ride on the span data object as
+    ``input`` and ``response``, and the SDK sets them only on a run that keeps
+    sensitive data (``RunConfig.trace_include_sensitive_data``). So without this
+    a Responses API generation reaches Langfuse with no input and the response id
+    as its output, whatever the run allowed. The input is the call's
+    instructions as a ``system`` message, then its input items; the output is the
+    response's text, or its output items when it has no text (a tool call).
+    """
+    response = getattr(raw, "response", None)
+    given = getattr(raw, "input", None)
+    if response is None and given is None:
+        return None, None
+    messages: list[Any] = []
+    instructions = getattr(response, "instructions", None)
+    if isinstance(instructions, str) and instructions:
+        messages.append({"role": "system", "content": instructions})
+    if isinstance(given, str):
+        messages.append({"role": "user", "content": given})
+    elif isinstance(given, (list, tuple)):
+        messages.extend(_plain(item) for item in given)
+    output: Any = None
+    if response is not None:
+        try:
+            text = response.output_text
+        except Exception:  # noqa: BLE001
+            text = None
+        if isinstance(text, str) and text:
+            output = text
+        else:
+            output = [
+                _plain(item) for item in (getattr(response, "output", None) or [])
+            ] or None
+    return (messages or None), output
 
 
 def langfuse_id(sdk_id: str | None) -> str | None:
@@ -88,6 +155,17 @@ def flat_parameters(config: Any) -> dict[str, Any] | None:
     return flat or None
 
 
+@dataclass(frozen=True)
+class PromptLink:
+    """What ``Langfuse.generation(prompt=...)`` reads of a prompt client: its name,
+    its version and whether it is a fallback. The release records the first two, so
+    the link needs no round trip to Langfuse."""
+
+    name: str
+    version: int
+    is_fallback: bool = False
+
+
 def _when(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -107,6 +185,7 @@ class LangfuseTracingProcessor(TracingProcessor):
         self.client = client
         self.mask = mask
         self.flush_on_trace_end = flush_on_trace_end
+        self._shut_down = False
 
     def _masked(self, value: Any) -> Any:
         if value is None or self.mask is None:
@@ -127,12 +206,31 @@ class LangfuseTracingProcessor(TracingProcessor):
 
     def on_trace_start(self, trace: Trace) -> None:
         data = trace.export() or {}
+        metadata = data.get("metadata")
+        attributes: dict[str, Any] = {}
+        if isinstance(metadata, Mapping):
+            metadata = dict(metadata)
+            reserved = {k: metadata.pop(k) for k in RESERVED_KEYS if k in metadata}
+            tags = [
+                t.strip()
+                for t in str(reserved.get(TAGS_KEY) or "").split(",")
+                if t.strip()
+            ]
+            attributes = {
+                "user_id": reserved.get(USER_ID_KEY),
+                "version": reserved.get(VERSION_KEY),
+                "release": reserved.get(RELEASE_KEY),
+                "tags": tags or None,
+            }
+            metadata = metadata or None
         try:
             self.client.trace(
                 id=langfuse_id(trace.trace_id),
                 name=data.get("workflow_name") or trace.name,
                 session_id=data.get("group_id"),
-                metadata=data.get("metadata"),
+                metadata=metadata,
+                # Only what is set, so the client's own release stays when none is.
+                **{k: str(v) if k != "tags" else v for k, v in attributes.items() if v},
             )
         except Exception:  # noqa: BLE001 - tracing must never fail the run
             log.warning(
@@ -167,7 +265,7 @@ class LangfuseTracingProcessor(TracingProcessor):
             )
         try:
             if kind in GENERATION_KINDS:
-                self._generation(kind, span_data, common)
+                self._generation(kind, span_data, common, span.span_data)
             else:
                 self._span(kind, span_data, common)
         except Exception:  # noqa: BLE001 - tracing must never fail the run
@@ -178,23 +276,45 @@ class LangfuseTracingProcessor(TracingProcessor):
             )
 
     def _generation(
-        self, kind: str, span_data: dict[str, Any], common: dict[str, Any]
+        self,
+        kind: str,
+        span_data: dict[str, Any],
+        common: dict[str, Any],
+        raw: Any = None,
     ) -> None:
+        link = RUN_LINK.get()
+        # The Responses API span exports no model: the response object has it, and
+        # failing that the run knows the name it asked for.
+        response_model = getattr(getattr(raw, "response", None), "model", None)
+        model = (
+            span_data.get("model")
+            or (response_model if isinstance(response_model, str) else None)
+            or (link.model if link else None)
+        )
+        prompt = (
+            PromptLink(link.prompt_name, link.prompt_version)
+            if link and link.prompt_name and link.prompt_version is not None
+            else None
+        )
         usage = span_data.get("usage") or {}
         usage_details = {
             k: int(v) for k, v in usage.items() if isinstance(v, (int, float))
         } or None
+        given, answered = response_io(raw) if kind == "response" else (None, None)
         output = span_data.get("output")
+        if output is None:
+            output = answered
         if output is None and span_data.get("response_id"):
             output = {"response_id": span_data["response_id"]}
         self.client.generation(
             name=span_data.get("name") or kind,
-            model=span_data.get("model"),
+            model=model,
             model_parameters=flat_parameters(span_data.get("model_config")),
-            input=self._masked(span_data.get("input")),
+            input=self._masked(span_data.get("input") or given),
             output=self._masked(output),
             usage_details=usage_details,
             metadata={"kind": kind},
+            **({"prompt": prompt} if prompt else {}),
             **common,
         )
 
@@ -225,12 +345,17 @@ class LangfuseTracingProcessor(TracingProcessor):
         )
 
     def shutdown(self) -> None:
+        """Flush what is pending, once; later calls do nothing and none raises. The
+        client is the host's and stays open: other code writes through it."""
+        if self._shut_down:
+            return
+        self._shut_down = True
         self.force_flush()
 
     def force_flush(self) -> None:
         try:
             self.client.flush()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - tracing must never fail the run
             log.debug("asas_agent.tracing: flush failed", exc_info=True)
 
 
@@ -238,6 +363,7 @@ __all__ = [
     "GENERATION_KINDS",
     "MASK_FAILED",
     "LangfuseTracingProcessor",
+    "PromptLink",
     "flat_parameters",
     "langfuse_id",
 ]
